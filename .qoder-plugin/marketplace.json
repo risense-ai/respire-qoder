@@ -1,0 +1,23 @@
+{
+  "name": "risense",
+  "owner": {
+    "name": "risense-ai"
+  },
+  "metadata": {
+    "description": "risense-ai Qoder plugins",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "respire-qoder",
+      "source": "./",
+      "description": "respire memory for Qoder: every-round title-tier recall, one-prefix store, model-optional degradation.",
+      "category": "Productivity",
+      "tags": [
+        "memory",
+        "hooks",
+        "recall"
+      ]
+    }
+  ]
+}

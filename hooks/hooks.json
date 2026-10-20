@@ -1,0 +1,42 @@
+{
+  "description": "respire 记忆层：SessionStart 注简则、UserPromptSubmit 每轮召回、Stop 存储检查",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|new",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${QODER_PLUGIN_ROOT}/hooks/respire.py\" SessionStart || python \"${QODER_PLUGIN_ROOT}/hooks/respire.py\" SessionStart",
+            "timeout": 20,
+            "statusMessage": "respire:注入记忆层简则"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${QODER_PLUGIN_ROOT}/hooks/respire.py\" UserPromptSubmit || python \"${QODER_PLUGIN_ROOT}/hooks/respire.py\" UserPromptSubmit",
+            "timeout": 20,
+            "statusMessage": "respire:检索记忆中"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${QODER_PLUGIN_ROOT}/hooks/respire.py\" Stop || python \"${QODER_PLUGIN_ROOT}/hooks/respire.py\" Stop",
+            "timeout": 20,
+            "statusMessage": "respire:存储检查"
+          }
+        ]
+      }
+    ]
+  }
+}
