@@ -8,6 +8,8 @@
   "enabled": true,
   "skip_prefixes": [
     "你正在为 Qoder 任务监控编写简短的会话 Recap",
-    "你正在为 Qoder"
+    "你正在为 Qoder",
+    "You are writing a brief session recap for Qoder",
+    "You are writing a short session recap for Qoder"
   ]
 }

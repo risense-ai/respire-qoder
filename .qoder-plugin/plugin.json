@@ -1,7 +1,7 @@
 {
   "name": "respire-qoder",
   "displayName": "respire 记忆",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "respire memory for Qoder: every-round title-tier recall, one-prefix store, model-optional degradation. Register on rsrs.rs for sync; the sidecar model is an optional boost.",
   "descriptionZh": "respire 本地记忆：每轮自动召回、一句「记：」落库、Stop 存储检查，不装模型也完全可用。",
   "author": {
