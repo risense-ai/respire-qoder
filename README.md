@@ -57,7 +57,7 @@ npm i -g @rsrsai/cli@latest
 | `SessionStart` | 注入记忆层简则（何时翻忆、如何落库、红线）；一次探测三态——未登录附注册引导、库空（<10 条）附首日存料引导、缺语义模型附**可选**装法；常态零打扰 |
 | `UserPromptSubmit` | 自动 `rsrs recall --titles`：标题档注入，只给分数＋8 位短 id＋标题，正文由 agent `rsrs show <id>` 按需取；默认直出不过滤，噪音边界＝引擎 skip 门＋limit 5＋标题档 |
 | prompt 以「记：」「存：」「remember:」开头 | 直接 `rsrs remember … --importance important` 落库并回执；判为相似时不写入、转述候选（`--parent` 挂靠或 `--force` 直写）由模型决断；回执要求模型抽「主语＋动作＋结果」事实句并 `retitle` 替换暂拟题 |
-| `Stop` | 存储检查：`decision: deny` 续跑一轮，提示把本轮新的**事实/决定/约定/教训/踩坑**分条存入；`stop_hook_active=true` 时放行，防循环；`store_nudge_every` 节流；近 10 分钟已落库过则不再催 |
+| `Stop` | 存储检查：`decision: deny` 续跑一轮，提示把本轮新的**事实/决定/约定/教训/踩坑**分条存入；`stop_hook_active=true` 时放行，防循环；`store_nudge_every` 节流；近 10 分钟本库有过落库（问引擎 `list` 取最近 `updated_at`，覆盖 agent 直接 `rsrs remember`）则不再催 |
 | `/nomem` 前缀 | 本轮跳过召回 |
 | `$skill: 名称` 前缀 | 召回前剥除，防技能名词面污染 query |
 | `skills/respire` | 按需加载的完整操作法；动作全由钩子驱动 |

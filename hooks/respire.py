@@ -5,6 +5,7 @@
 # 铁律: fail-open —— 任何异常 → 空 stdout、exit 0（协议里即「无决策、放行」），绝不 exit 2。
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -13,12 +14,13 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.2"
+VERSION = "0.6.3"
 
 # 超时窗（秒）：须盖住 rsrs runtime 冷启动（实测 doctor 模型加载 7s+），否则首轮静默、热后即灵
 RECALL_T = 14
 PROBE_T = 10
 STORE_T = 18
+LIST_T = 6    # Stop 查「最近一条落库时间」的窗口（实测 list ~0.9s，热后即回）
 LOG_MAX = 256 * 1024  # hook.log 超此整文件清轮
 
 DEFAULTS = {
@@ -351,6 +353,39 @@ STORE_NUDGE = ("Memory check (automatic, once): do only one thing — if this tu
                "repeat the answer. End after storing or when nothing needs storing.")
 
 
+def _epoch(rfc3339):
+    """'2026-10-22T15:06:38.926Z' → epoch 秒；解析失败返回 None（不猜时区）。"""
+    if not isinstance(rfc3339, str) or not rfc3339.strip():
+        return None
+    s = rfc3339.strip()
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)  # 无偏移一律按 UTC（rsrs 输出恒带 Z）
+    return dt.timestamp()
+
+
+def engine_last_store(engine, timeout: int = LIST_T):
+    """问引擎最近一条记录的落库时间（秒级 epoch），取 top3 的 updated/created 最大值。
+    agent 直接跑 rsrs remember 不写本层 hook.log，节流必须问库才看得见。失败返回 None（放行给上层催）。"""
+    r = run_rsrs(engine, ["list", "--limit", "3", "--json"], timeout)
+    doc = json.loads(r.stdout) if r.stdout else None
+    dets = doc.get("details") if isinstance(doc, dict) else None
+    best = None
+    for d in (dets or []):
+        if not isinstance(d, dict):
+            continue
+        for k in ("updated_at", "created_at"):
+            v = _epoch(d.get(k))
+            if v is not None and (best is None or v > best):
+                best = v
+    return best
+
+
 def on_stop(data: dict, cfg: dict, engine) -> str:
     """Stop 存储检查：干完活的存储提示（block+reason 续跑一轮）。
     规范防循环：续跑轮 stdin 带 stop_hook_active=true → 放行。"""
@@ -379,9 +414,9 @@ def on_stop(data: dict, cfg: dict, engine) -> str:
             return ""
     except Exception:
         pass
-    try:  # 近 10 分钟本层已落库过 → 不再催（记忆活跃）
+    now = time.time()
+    try:  # 近 10 分钟本层已落库过 → 不再催（记忆活跃）：钩子侧「记：」路径写本层日志
         logp = os.environ.get("RESPITE_LOG") or os.path.join(data_dir(), "hook.log")
-        now = time.time()
         if os.path.exists(logp):
             with open(logp, encoding="utf-8", errors="replace") as f:
                 for ln in f.readlines()[-50:]:
@@ -395,8 +430,17 @@ def on_stop(data: dict, cfg: dict, engine) -> str:
                         except Exception:
                             continue
                         if now - ts < 600:
-                            log_event(cfg, "stop", "stored_recent_skip")
+                            log_event(cfg, "stop", "stored_recent_skip", "src=hooklog")
                             return ""
+    except Exception:
+        pass
+    try:  # 近 10 分钟引擎侧有落库（agent 直接 rsrs remember/updates）→ 同样不催，问库而非看日志
+        if engine:
+            t1 = time.time()
+            ts = engine_last_store(engine)
+            if ts is not None and now - ts < 600:
+                log_event(cfg, "stop", "stored_recent_skip", "src=engine", (time.time() - t1) * 1000)
+                return ""
     except Exception:
         pass
     log_event(cfg, "stop", "nudge")

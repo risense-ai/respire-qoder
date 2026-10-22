@@ -50,6 +50,25 @@ check() {   # check <名字> <实际输出> <模式: 非空|空|含:xxx|不含:x
   fi
 }
 
+# Stop 节流分支的引擎桩：只回 list --json，fresh=刚落库 / stale=陈旧（真机库随时有人写，不能拿真引擎断言催/不催）
+STUB_FRESH="$TMP/rsrs-fresh"; STUB_STALE="$TMP/rsrs-stale"
+FRESH_TS="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+cat > "$STUB_FRESH" <<EOF
+#!/usr/bin/env bash
+[ "\${1:-}" = list ] && printf '{"command":"list","status":"ok","details":[{"id":"aaaaaaaaaaaaaaaa","created_at":"$FRESH_TS","updated_at":"$FRESH_TS","title":"fresh","content":"x"}]}'
+exit 0
+EOF
+cat > "$STUB_STALE" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = list ] && printf '{"command":"list","status":"ok","details":[{"id":"bbbbbbbbbbbbbbbb","created_at":"2020-01-01T00:00:00.000Z","updated_at":"2020-01-01T00:00:00.000Z","title":"stale","content":"x"}]}'
+exit 0
+EOF
+chmod +x "$STUB_FRESH" "$STUB_STALE"
+CFG_STALE="$TMP/config-stale.json"
+echo '{"session_rules": true, "rsrs": "'"$STUB_STALE"'"}' > "$CFG_STALE"
+CFG_FRESH="$TMP/config-fresh.json"
+echo '{"session_rules": true, "rsrs": "'"$STUB_FRESH"'"}' > "$CFG_FRESH"
+
 # ---- 只读分支（真库查询，不写） ----
 check "SessionStart 注入简则" "$(run SessionStart)" "含:respire memory layer"
 check "简则点明引擎与同步" "$(run SessionStart)" "含:rsrs.rs"
@@ -107,9 +126,9 @@ except SystemExit:
     pass
 PY
 }
-# Stop 存储检查：<stop_hook_active>
+# Stop 存储检查：<stop_hook_active>（节流断言一律走 stale 引擎桩，保证「仍催」确定性）
 run_stop() {
-  "$PY3" - "$1" <<'PY' | RESPITE_CONFIG="$CFG_ON" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" "$PY3" "$ROOT/hooks/respire.py" Stop
+  "$PY3" - "$1" <<'PY' | RESPITE_CONFIG="$CFG_STALE" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" "$PY3" "$ROOT/hooks/respire.py" Stop
 import json, sys
 print(json.dumps({"hook_event_name": "Stop", "stop_hook_active": sys.argv[1] == "true"}))
 PY
@@ -127,6 +146,9 @@ print(json.dumps({"hook_event_name": "Stop", "stop_hook_active": False}))
 PY
 }
 check "Stop 节流关闭静默" "$(run_stop_cfg "$CFG_NUDGE0")" "空"
+check "Stop 引擎近期落库不催" "$(run_stop_cfg "$CFG_FRESH")" "空"
+check "Stop 引擎陈旧落库仍催" "$(run_stop false)" '含:"decision": "deny"'
+check "引擎放行留痕 src=engine" "$(grep -q 'stored_recent_skip.*src=engine' "$TMP/hook.log" && echo YES)" "含:YES"
 printf '%s\n' '{"ts": "'"$(date +%Y-%m-%dT%H:%M:%S)"'", "ev": "store", "out": "ok", "d": "feed"}' >> "$TMP/hook.log"
 check "Stop 已存放行放行" "$(run_stop false)" "空"
 check "enabled=false 全线静默" "$(run SessionStart "" "$CFG_OFFE")" "空"

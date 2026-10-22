@@ -5,7 +5,7 @@ description: respire (rsrs) local encrypted memory playbook. Automatic per-turn 
 
 # respire · memory playbook
 
-Plugin behavior (Qoder hooks): SessionStart injects a short playbook; every UserPromptSubmit auto-recalls (the engine filters irrelevant queries itself; default is direct output, title tier limited to 5); when a prompt starts with "记：", "存：", or "remember:", the plugin stores it first as a fallback and returns a receipt — **when the receipt includes a provisional title and short id, extract a complete "subject + action + result" sentence from the facts and replace it with `rsrs retitle <short-id> --title` (hard rule; the title is the facade for recall and dedup)**; on Stop, if this turn produced new facts, the plugin nudges once to store; `/nomem` disables recall for the turn.
+Plugin behavior (Qoder hooks): SessionStart injects a short playbook; every UserPromptSubmit auto-recalls (the engine filters irrelevant queries itself; default is direct output, title tier limited to 5); when a prompt starts with "记：", "存：", or "remember:", the plugin stores it first as a fallback and returns a receipt — **when the receipt includes a provisional title and short id, extract a complete "subject + action + result" sentence from the facts and replace it with `rsrs retitle <short-id> --title` (hard rule; the title is the facade for recall and dedup)**; on Stop, if this turn produced new facts, the plugin nudges once to store — unless the store received a write in the last 10 minutes (any `rsrs remember`/`update`, agent-side included), in which case it stays silent; `/nomem` disables recall for the turn.
 
 ## Commands
 
