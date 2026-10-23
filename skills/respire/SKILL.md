@@ -25,6 +25,12 @@ Plugin behavior (Qoder hooks): SessionStart injects a short playbook; every User
 - remember stores after judgement: `status:"ok"` means written (`summary.id`); `status:"pending"` plus `written:false` means a similar record was found and **nothing was written** — attach with `--parent <id>` or force with `--force`
 - The default `trivial` tier goes to the diary area, is excluded from recall and gets its title rewritten to "activity track <date>" — use `--importance important` for factual records
 
+## Data safety (user-facing)
+
+- **Fully offline-capable** — the store is a local database: recall and store work with no network, no registration, no login; offline writes queue locally and sync once back online
+- **Only ciphertext reaches the cloud** — records are encrypted locally before upload; the server stores encrypted records only, with no model and no decryption key
+- **Self-hostable sync server** — `respire-server` deploys with Docker Compose + Postgres on an enterprise intranet, so data never leaves the network
+
 ## Red lines
 
 - Never put passwords, ID numbers, phone numbers, card numbers, or private keys into memory bodies or query terms; record only where they are stored — the library is encrypted, but a leaked key exposes everything
