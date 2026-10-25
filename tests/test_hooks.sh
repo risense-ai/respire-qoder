@@ -107,7 +107,7 @@ try:
 except SystemExit:
     pass
 PY
-)" "含:npm i -g @rsrsai/cli"
+)" "含:npm i -g rsrs-cli"
 
 CFG_OFFE="$TMP/config-disabled.json"
 echo '{"enabled": false}' > "$CFG_OFFE"

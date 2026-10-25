@@ -2,7 +2,7 @@
 
 > 吸即存，呼即取——给 Qoder 装上 respire 本地加密记忆。
 
-`respire-qoder` 是 Dim 版 [respire-dimcode](https://github.com/risense-ai/respire-dimcode) 的 Qoder 移植：用 Qoder 的插件钩子，把 [respire 引擎（CLI 名 rsrs）](https://www.npmjs.com/package/@rsrsai/cli) 挂进 agent 循环——每轮标题档自动召回、「记：」一前缀即落库、收尾做一次存储检查。本地优先、端侧加密、云端 LWW 同步。
+`respire-qoder` 是 Dim 版 [respire-dimcode](https://github.com/risense-ai/respire-dimcode) 的 Qoder 移植：用 Qoder 的插件钩子，把 [respire 引擎（CLI 名 rsrs）](https://www.npmjs.com/package/rsrs-cli) 挂进 agent 循环——每轮标题档自动召回、「记：」一前缀即落库、收尾做一次存储检查。本地优先、端侧加密、云端 LWW 同步。
 
 插件本身不含引擎，也不带自定义安装脚本；引擎缺失时会在会话内把安装命令交给 agent 代跑。
 
@@ -39,7 +39,7 @@ qoder plugins install respire-qoder@risense
 ### 2. 引擎（缺失时 agent 可代装）
 
 ```bash
-npm i -g @rsrsai/cli@latest
+npm i -g rsrs-cli@latest
 rsrs --version
 ```
 
@@ -47,7 +47,7 @@ rsrs --version
 
 ```bash
 npm config set prefix ~/.npm-global
-npm i -g @rsrsai/cli@latest
+npm i -g rsrs-cli@latest
 ```
 
 插件每轮实时探测引擎；装好**同会话内**即恢复召回与「记：」落库。
