@@ -132,6 +132,10 @@ bash tests/test_hooks.sh --store
 - **跨平台回退**：hook 命令带 `python3 || python`；配置与日志写 `QODER_PLUGIN_DATA`
 - **包内自检**：结构、清单、hooks 形状、Python 可编译、敏感扫描
 
+## 已知边界
+
+- **首次召回稍慢**：会话开始后的第一次召回需要拉起引擎 runtime（装有语义模型时还要加载模型），实测 7 秒上下——慢在引擎冷启动，不在插件；插件按此设了宽松超时（recall 14s、probe 10s、单次 hook 总 20s），拉不起来时会在会话开头注入一条诊断提示。此后引擎常驻，后续召回通常秒回。
+
 ## 反馈与贡献
 
 - 仓库与源码：<https://github.com/risense-ai/respire-qoder>
