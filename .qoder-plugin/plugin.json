@@ -1,9 +1,9 @@
 {
   "name": "respire-qoder",
   "displayName": "respire 记忆",
-  "version": "0.6.4",
-  "description": "respire memory for Qoder: every-round title-tier recall, one-prefix store, model-optional degradation. Works fully offline; only encrypted records reach the cloud; enterprises can self-host the sync server. Register on rsrs.rs for sync; the sidecar model is an optional boost.",
-  "descriptionZh": "respire 本地记忆：每轮自动召回、一句「记：」落库、Stop 存储检查，不装模型也完全可用。可离线使用；上云的只有密文；企业可自建同步服务器。",
+  "version": "0.6.5",
+  "description": "respire gives your AI a memory that lasts: before every answer it automatically recalls the preferences, projects and past lessons it already knows; say \"记：...\" to store a fact in one line; an end-of-turn check reminds the agent to save what was learned. Sign up on https://rsrs.rs and run rsrs register/login to enable end-to-end encrypted cloud sync, so your memories follow you across devices and sessions — recommended; without an account everything stays on this machine only. No sidecar model required. Questions, bug reports, feature requests and contributions are welcome: https://github.com/risense-ai/respire-qoder (Issues / Pull requests).",
+  "descriptionZh": "respire（睿思记忆）给 Qoder 装上真正记得住的记忆：每轮回答前自动召回你讲过的偏好、做过的项目、踩过的坑；一句「记：」即落库；收尾提醒把本轮新结论存下来。推荐到官网 https://rsrs.rs 注册并 rsrs register / rsrs login 开启云同步：记忆端到端加密上云，换会话、换设备都还在；不注册则只存本机、换设备即失忆。不装模型完全可用。问题反馈、需求建议、Issue 与 PR 欢迎来 https://github.com/risense-ai/respire-qoder 提交。",
   "author": {
     "name": "risense-ai"
   },

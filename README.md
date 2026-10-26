@@ -1,16 +1,19 @@
 # respire-qoder
 
-> 吸即存，呼即取——给 Qoder 装上 respire 本地加密记忆。
+> 吸即存，呼即取——给 Qoder 装上真正记得住的 AI 记忆。
 
-`respire-qoder` 是 Dim 版 [respire-dimcode](https://github.com/risense-ai/respire-dimcode) 的 Qoder 移植：用 Qoder 的插件钩子，把 [respire 引擎（CLI 名 rsrs）](https://www.npmjs.com/package/@rsrsai/cli) 挂进 agent 循环——每轮标题档自动召回、「记：」一前缀即落库、收尾做一次存储检查。本地优先、端侧加密、云端 LWW 同步。
+官网：<https://rsrs.rs> · 仓库：<https://github.com/risense-ai/respire-qoder> · 反馈与建议：[Issues](https://github.com/risense-ai/respire-qoder/issues) · 贡献代码：[Pull requests](https://github.com/risense-ai/respire-qoder/pulls)
+
+`respire-qoder` 用 Qoder 的插件钩子，把 [respire 引擎（CLI 名 rsrs）](https://www.npmjs.com/package/@rsrsai/cli) 挂进 agent 循环——每轮回答前自动召回你讲过的偏好、做过的项目、踩过的坑，「记：」一前缀即落库，收尾做一次存储检查。**推荐注册并开启云同步**：记忆端到端加密上云，换会话、换设备都还在；不注册也能用，但只存本机，换设备即失忆。
 
 插件本身不含引擎，也不带自定义安装脚本；引擎缺失时会在会话内把安装命令交给 agent 代跑。
 
 ## 数据存储安全
 
-1. **可离线使用**：记忆库是本机本地库，新配置即离线模式——不联网、不注册、不登录，召回与落库照常；离线期间的写入留在本地队列不丢，联网登录后随 autosync 自动补同步。
+1. **云同步是主路径**：去 [rsrs.rs](https://rsrs.rs) 注册后本机 `rsrs register` / `rsrs login`，记忆端到端加密上云，换设备、重装、换工具都不丢——推荐所有用户开启，插件检测到未登录会主动提示注册。
 2. **同步到云端的是密文**：记录在本地加密后才上传，服务端只存加密记录；解密、索引、检索全在设备端完成，服务端不需要模型、也拿不到账户解密密钥——云端与运维方可见的只有密文。
-3. **企业可自建同步服务器**：服务端 `respire-server` 支持私有化部署（Docker Compose + Postgres），可整套架在企业内网离线运行，把同步端点指向自建服务即可，数据不出企业网络（部署步骤见 respire-docs《自托管》）。
+3. **断网/未注册也能用**：记忆库是本机本地库，不联网、不注册、不登录时召回与落库照常；离线期间的写入留在本地队列不丢，联网登录后随 autosync 自动补同步。但纯本机会随设备丢失而失忆，请尽快注册开启同步。
+4. **企业可自建同步服务器**：服务端 `respire-server` 支持私有化部署（Docker Compose + Postgres），可整套架在企业内网离线运行，把同步端点指向自建服务即可，数据不出企业网络（部署步骤见 respire-docs《自托管》）。
 
 ## 不装模型完全可用（降级是一等公民）
 
@@ -52,9 +55,11 @@ npm i -g @rsrsai/cli@latest
 
 插件每轮实时探测引擎；装好**同会话内**即恢复召回与「记：」落库。
 
-### 3. 注册登录（首次）
+### 3. 注册并开启云同步（推荐，首次）
 
-去 [rsrs.rs](https://rsrs.rs) 注册 → 本机 `rsrs register`。日常 `rsrs login` 浏览器授权；autosync 常开，`rsrs sync` 手动同步，`rsrs status` 查态。
+去 [rsrs.rs](https://rsrs.rs) 注册 → 本机 `rsrs register`（首设备需本人设密码）。日常 `rsrs login` 浏览器授权；autosync 常开，`rsrs sync` 手动同步，`rsrs status` 查态。
+
+不做这一步插件也能用，但记忆只存本机——换设备、重装系统即失忆，这不是推荐用法。SessionStart 探测到未登录时会自动注入注册引导，照做即可。
 
 ## 装上后发生什么
 
@@ -67,17 +72,6 @@ npm i -g @rsrsai/cli@latest
 | `/nomem` 前缀 | 本轮跳过召回 |
 | `$skill: 名称` 前缀 | 召回前剥除，防技能名词面污染 query |
 | `skills/respire` | 按需加载的完整操作法；动作全由钩子驱动 |
-
-## 与 Dim 版的差异
-
-| 项 | Dim 版 | Qoder 版 |
-| --- | --- | --- |
-| 清单 | `.codex-plugin/plugin.json` | `.qoder-plugin/plugin.json` |
-| 插件根占位符 | `${CLAUDE_PLUGIN_ROOT}` | `${QODER_PLUGIN_ROOT}` |
-| 配置/日志目录 | 插件 `hooks/` | `QODER_PLUGIN_DATA`，无则回退 `hooks/` |
-| Stop 阻塞 | `{"decision":"block"}` | `{"decision":"deny"}`（Qoder 文档语义） |
-| 市场 | `dim plugin marketplace` | Qoder 本地目录安装或市场 |
-| 引擎 | respire（rsrs CLI） | 同左 |
 
 ## 调优（可选）
 
@@ -143,6 +137,13 @@ bash tests/test_hooks.sh --store
 - **召回质量是引擎上限**：用词鸿沟下 BGE-M3 可能漏召真条——简则已约束模型「命中不贴题换词补查」。
 - **冷启动窗**：runtime 冷启＋模型加载实测 7s+，故 hook timeout 20s、recall 14s、probe 10s；探测失败时 SessionStart 注入诊断段。
 - **未验证项**：本包在 Qoder CLI/Desktop 中的真实加载与 Stop 阻塞效果尚未真机安装验证；钩子脚本本身已用真引擎与假引擎分别跑通。Qoder 插件机制以官方文档为准：<https://docs.qoder.com/zh/cli/plugins-reference>、<https://docs.qoder.com/zh/cli/hooks-reference>。
+
+## 反馈与贡献
+
+- 仓库与源码：<https://github.com/risense-ai/respire-qoder>
+- 遇到问题、有功能建议：提 [Issue](https://github.com/risense-ai/respire-qoder/issues)，附会话场景与 `hook.log`（`QODER_PLUGIN_DATA/hook.log`，超 256KB 自动清轮）能大幅加速定位。
+- 想贡献代码或文档：欢迎提 [Pull request](https://github.com/risense-ai/respire-qoder/pulls)，保持与现有风格一致，改动后跑一遍 `python3 scripts/validate_plugin.py` 与 `bash tests/test_hooks.sh`。
+- 产品本身的问题（引擎、账号、同步）：<https://github.com/risense-ai/respire> 的 Issues，或官网 <https://rsrs.rs>。
 
 ## License
 

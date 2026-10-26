@@ -4,14 +4,14 @@
     "name": "risense-ai"
   },
   "metadata": {
-    "description": "risense-ai Qoder plugins",
+    "description": "risense-ai plugins for Qoder. Current plugin: respire-qoder — an encrypted memory layer with optional cloud sync. Repo / issues / PRs: https://github.com/risense-ai/respire-qoder · Site: https://rsrs.rs",
     "version": "1.0.0"
   },
   "plugins": [
     {
       "name": "respire-qoder",
       "source": "./",
-      "description": "respire memory for Qoder: every-round title-tier recall, one-prefix store, model-optional degradation.",
+      "description": "respire gives your AI a memory that lasts: auto per-turn recall of your preferences, projects and past lessons; \"记：\" stores a fact in one line; an end-of-turn check reminds the agent to save new conclusions. Register on https://rsrs.rs for end-to-end encrypted cloud sync so memories follow you across devices and sessions (recommended; local-only without an account). No model required. Issues & PRs: https://github.com/risense-ai/respire-qoder",
       "category": "Productivity",
       "tags": [
         "memory",
