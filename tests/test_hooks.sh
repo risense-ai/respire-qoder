@@ -71,7 +71,7 @@ echo '{"session_rules": true, "rsrs": "'"$STUB_FRESH"'"}' > "$CFG_FRESH"
 
 # ---- 只读分支（真库查询，不写） ----
 check "SessionStart 注入简则" "$(run SessionStart)" "含:respire memory layer"
-check "简则点明引擎与同步" "$(run SessionStart)" "含:rsrs.rs"
+check "简则点明引擎与同步" "$(run SessionStart)" "含:rsrs register / rsrs login"
 check "已登录不带登录引导" "$(run SessionStart)" "不含:not signed in"
 check "未登录注入登录引导" "$(RESPITE_FAKE_LOGGED_OUT=1 run SessionStart)" "含:not signed in"
 check "未登录引导给出注册与代登法" "$(RESPITE_FAKE_LOGGED_OUT=1 run SessionStart)" "含:rsrs login --oauth --no-open"
@@ -156,7 +156,7 @@ check "enabled=false 落库也静默" "$(run UserPromptSubmit "记：关断时�
 check "引擎缺失注入安装指令" "$(run_engineless)" "含:Install it now on the user's behalf"
 check "引导禁自造超级密码" "$(run_engineless)" "含:never pass --super"
 check "引导要求保存恢复码" "$(run_engineless)" "含:copy and keep it"
-check "引擎缺失含配置下一步" "$(run_engineless)" "含:register at https://rsrs.rs"
+check "引擎缺失含配置下一步" "$(run_engineless)" "含:rsrs register"
 check "probe失败含未注册分支" "$(RESPITE_FAKE_PROBE_FAIL=1 run SessionStart)" "含:never registered"
 
 out=$(run UserPromptSubmit "rsrs 信封 JSON 结构解析取哪层")

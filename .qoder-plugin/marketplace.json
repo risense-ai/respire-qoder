@@ -11,7 +11,7 @@
     {
       "name": "respire-qoder",
       "source": "./",
-      "description": "Memory layer for Qoder. The agent automatically recalls stored records before each answer; a prompt starting with \"记：\" writes to the store; a store check at the end of a turn reminds it to save what it just learned. Records are encrypted on the local machine; register on https://rsrs.rs and run rsrs register / rsrs login to sync them encrypted to the cloud (without an account, local only). No model required. Issues & PRs: https://github.com/risense-ai/respire-qoder",
+      "description": "Memory layer for Qoder. The agent automatically recalls stored records before each answer; a prompt starting with \"记：\" writes to the store; a store check at the end of a turn reminds it to save what it just learned. Records are encrypted on the local machine; run rsrs register on this machine to sync them encrypted to the cloud (without an account, local only). No model required. Issues & PRs: https://github.com/risense-ai/respire-qoder",
       "category": "Productivity",
       "tags": [
         "memory",
