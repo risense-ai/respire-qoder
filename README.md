@@ -4,7 +4,7 @@
 
 官网：<https://rsrs.rs> · 仓库：<https://github.com/risense-ai/respire-qoder> · 反馈与建议：[Issues](https://github.com/risense-ai/respire-qoder/issues) · 贡献代码：[Pull requests](https://github.com/risense-ai/respire-qoder/pulls)
 
-`respire-qoder` 用 Qoder 的插件钩子，把 [respire 引擎（CLI 名 rsrs）](https://www.npmjs.com/package/@rsrsai/cli) 挂进 agent 循环：每轮回答前召回记忆库里已有的记录，prompt 以「记：」开头即写入，一轮结束时提醒 agent 存下刚学到的东西。**推荐注册并开启云同步**：到 [rsrs.rs](https://rsrs.rs) 注册后记录加密同步上云，在另一台设备登录同一账号即可取用；不注册也能用，但记录只存本机，设备丢了记录也就没了。
+`respire-qoder` 是 Dim 版 [respire-dimcode](https://github.com/risense-ai/respire-dimcode) 的 Qoder 移植：用 Qoder 的插件钩子，把 [respire 引擎（CLI 名 rsrs）](https://www.npmjs.com/package/rsrs-cli) 挂进 agent 循环——每轮标题档自动召回、「记：」一前缀即落库、收尾做一次存储检查。本地优先、端侧加密、云端 LWW 同步。**推荐注册并开启云同步**：到 [rsrs.rs](https://rsrs.rs) 注册后记录加密同步上云，在另一台设备登录同一账号即可取用；不注册也能用，但记录只存本机，设备丢了记录也就没了。
 
 插件本身不含引擎，也不带自定义安装脚本；引擎缺失时会在会话内把安装命令交给 agent 代跑。
 
@@ -42,7 +42,7 @@ qoder plugins install respire-qoder@risense
 ### 2. 引擎（缺失时 agent 可代装）
 
 ```bash
-npm i -g @rsrsai/cli@latest
+npm i -g rsrs-cli@latest
 rsrs --version
 ```
 
@@ -50,7 +50,7 @@ rsrs --version
 
 ```bash
 npm config set prefix ~/.npm-global
-npm i -g @rsrsai/cli@latest
+npm i -g rsrs-cli@latest
 ```
 
 插件每轮实时探测引擎；装好后同一会话内即恢复召回与「记：」写入。

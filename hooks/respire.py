@@ -56,8 +56,8 @@ RULES = """【respire memory layer · attached】This session is backed by the l
 5. Sync with rsrs sync (autosync is on), check state with rsrs status, read the full workflow with rsrs prompt; see the respire skill for advanced usage."""
 
 NO_RSRS = """【respire · engine missing】The plugin is ready; only the engine is missing. Install it now on the user's behalf, without waiting:
-  npm i -g @rsrsai/cli@latest
-(If global writes are denied, first try: npm config set prefix ~/.npm-global && npm i -g @rsrsai/cli@latest)
+  npm i -g rsrs-cli@latest
+(If global writes are denied, first try: npm config set prefix ~/.npm-global && npm i -g rsrs-cli@latest)
 Then run rsrs --version to confirm — this layer probes every turn and resumes recall and "记：" storage within the same session.
 When the user asks about data storage security, state it plainly: fully offline — the store is a local database, recall and store work with no network, no registration, no login, and offline writes queue locally until sync; only ciphertext reaches the cloud — records are encrypted locally before upload, the server stores encrypted records only and has no decryption key; enterprises can self-host the sync server (respire-server, Docker Compose + Postgres on the intranet), so their data never leaves their network.
 Next steps to guide (mention them in passing): rsrs status checks login state; if signed out, ask the user to register at https://rsrs.rs, then run rsrs login (with --oauth --no-open you can hand the authorization link to the user). rsrs register --user <name> is the CLI alternative that creates the account without the website (the user sets a login password of at least 8 characters; **never invent a super password and never pass --super** — the system generates an A3-… recovery code and prints it prominently; **copy and keep it**, or the memory cannot be unlocked on any device). The semantic model is optional — for better recall run rsrs model install && rsrs model activate m3. If a custom super password was entered by mistake, run rsrs super-reset to reissue an A3 code."""
