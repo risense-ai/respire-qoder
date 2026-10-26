@@ -2,8 +2,8 @@
   "name": "respire-qoder",
   "displayName": "respire 记忆",
   "version": "0.6.5",
-  "description": "respire gives your AI a memory that lasts: before every answer it automatically recalls the preferences, projects and past lessons it already knows; say \"记：...\" to store a fact in one line; an end-of-turn check reminds the agent to save what was learned. Sign up on https://rsrs.rs and run rsrs register/login to enable end-to-end encrypted cloud sync, so your memories follow you across devices and sessions — recommended; without an account everything stays on this machine only. No sidecar model required. Questions, bug reports, feature requests and contributions are welcome: https://github.com/risense-ai/respire-qoder (Issues / Pull requests).",
-  "descriptionZh": "respire（睿思记忆）给 Qoder 装上真正记得住的记忆：每轮回答前自动召回你讲过的偏好、做过的项目、踩过的坑；一句「记：」即落库；收尾提醒把本轮新结论存下来。推荐到官网 https://rsrs.rs 注册并 rsrs register / rsrs login 开启云同步：记忆端到端加密上云，换会话、换设备都还在；不注册则只存本机、换设备即失忆。不装模型完全可用。问题反馈、需求建议、Issue 与 PR 欢迎来 https://github.com/risense-ai/respire-qoder 提交。",
+  "description": "respire-qoder adds a memory layer to Qoder. Before each answer the agent recalls existing records from the memory store; a prompt starting with \"记：\" is written to the store; at the end of a turn a store check reminds the agent to save what it just learned. Records are stored encrypted on the local machine. Sign up on https://rsrs.rs and run rsrs register / rsrs login to sync records encrypted to the cloud; logging in on another device picks them up there. Without an account everything stays on this machine only. Works without a sidecar model. Feedback and contributions: https://github.com/risense-ai/respire-qoder (Issues / Pull requests).",
+  "descriptionZh": "respire-qoder 给 Qoder 加一层记忆。每轮回答前，agent 先召回记忆库里已有的记录；prompt 以「记：」开头就把内容写进记忆库；一轮结束时提醒 agent 把刚学到的东西存下来。记录在本机加密存储。到 https://rsrs.rs 注册，本机执行 rsrs register / rsrs login，记录加密同步到云端，在另一台设备登录同一账号即可取用；不注册也能用，记录只在本机。不装模型即可用。反馈和贡献走 https://github.com/risense-ai/respire-qoder（Issue / PR）。",
   "author": {
     "name": "risense-ai"
   },

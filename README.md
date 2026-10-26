@@ -1,10 +1,10 @@
 # respire-qoder
 
-> 吸即存，呼即取——给 Qoder 装上真正记得住的 AI 记忆。
+> 吸即存，呼即取——给 Qoder 装上记忆层。
 
 官网：<https://rsrs.rs> · 仓库：<https://github.com/risense-ai/respire-qoder> · 反馈与建议：[Issues](https://github.com/risense-ai/respire-qoder/issues) · 贡献代码：[Pull requests](https://github.com/risense-ai/respire-qoder/pulls)
 
-`respire-qoder` 用 Qoder 的插件钩子，把 [respire 引擎（CLI 名 rsrs）](https://www.npmjs.com/package/@rsrsai/cli) 挂进 agent 循环——每轮回答前自动召回你讲过的偏好、做过的项目、踩过的坑，「记：」一前缀即落库，收尾做一次存储检查。**推荐注册并开启云同步**：记忆端到端加密上云，换会话、换设备都还在；不注册也能用，但只存本机，换设备即失忆。
+`respire-qoder` 用 Qoder 的插件钩子，把 [respire 引擎（CLI 名 rsrs）](https://www.npmjs.com/package/@rsrsai/cli) 挂进 agent 循环：每轮回答前召回记忆库里已有的记录，prompt 以「记：」开头即写入，一轮结束时提醒 agent 存下刚学到的东西。**推荐注册并开启云同步**：到 [rsrs.rs](https://rsrs.rs) 注册后记录加密同步上云，在另一台设备登录同一账号即可取用；不注册也能用，但记录只存本机，设备丢了记录也就没了。
 
 插件本身不含引擎，也不带自定义安装脚本；引擎缺失时会在会话内把安装命令交给 agent 代跑。
 
@@ -12,7 +12,7 @@
 
 1. **云同步是主路径**：去 [rsrs.rs](https://rsrs.rs) 注册后本机 `rsrs register` / `rsrs login`，记忆端到端加密上云，换设备、重装、换工具都不丢——推荐所有用户开启，插件检测到未登录会主动提示注册。
 2. **同步到云端的是密文**：记录在本地加密后才上传，服务端只存加密记录；解密、索引、检索全在设备端完成，服务端不需要模型、也拿不到账户解密密钥——云端与运维方可见的只有密文。
-3. **断网/未注册也能用**：记忆库是本机本地库，不联网、不注册、不登录时召回与落库照常；离线期间的写入留在本地队列不丢，联网登录后随 autosync 自动补同步。但纯本机会随设备丢失而失忆，请尽快注册开启同步。
+3. **断网/未注册也能用**：记忆库是本机本地库，不联网、不注册、不登录时召回与落库照常；离线期间的写入留在本地队列不丢，联网登录后随 autosync 自动补同步。但本机存储会随设备丢失而丢掉记录，请尽快注册开启同步。
 4. **企业可自建同步服务器**：服务端 `respire-server` 支持私有化部署（Docker Compose + Postgres），可整套架在企业内网离线运行，把同步端点指向自建服务即可，数据不出企业网络（部署步骤见 respire-docs《自托管》）。
 
 ## 不装模型完全可用（降级是一等公民）
@@ -59,7 +59,7 @@ npm i -g @rsrsai/cli@latest
 
 去 [rsrs.rs](https://rsrs.rs) 注册 → 本机 `rsrs register`（首设备需本人设密码）。日常 `rsrs login` 浏览器授权；autosync 常开，`rsrs sync` 手动同步，`rsrs status` 查态。
 
-不做这一步插件也能用，但记忆只存本机——换设备、重装系统即失忆，这不是推荐用法。SessionStart 探测到未登录时会自动注入注册引导，照做即可。
+不做这一步插件也能用，但记录只存本机：换设备、重装系统后取不到。SessionStart 探测到未登录时会自动注入注册引导，照做即可。
 
 ## 装上后发生什么
 
