@@ -82,7 +82,7 @@ check "缺模型点明词面回退" "$(RESPITE_FAKE_NO_MODEL=1 run SessionStart)
 check "有货库不带空库引导" "$(run SessionStart)" "不含:memory store is empty"
 check "空库注入首日引导" "$(RESPITE_FAKE_EMPTY=1 run SessionStart)" "含:memory store is empty"
 check "空库引导含导入线索" "$(RESPITE_FAKE_EMPTY=1 run SessionStart)" "含:extract facts"
-check "README 载三件事(模型可选)" "$(cat "$ROOT/README.md")" "含:不装模型完全可用"
+check "README 载三件事(模型可选)" "$(cat "$ROOT/README.md")" "含:不装模型也可使用"
 check "README 载 Qoder 装法" "$(cat "$ROOT/README.md")" "含:qoder plugins install"
 check "包内无自定义安装脚本" "$( { [ -e "$ROOT/install.sh" ] || [ -e "$ROOT/uninstall.sh" ]; } && echo PRESENT || echo absent )" "含:absent"
 check "探测失败注入冷启诊断段" "$(RESPITE_FAKE_PROBE_FAIL=1 run SessionStart)" "含:status probe failed"
