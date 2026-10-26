@@ -132,12 +132,6 @@ bash tests/test_hooks.sh --store
 - **跨平台回退**：hook 命令带 `python3 || python`；配置与日志写 `QODER_PLUGIN_DATA`
 - **包内自检**：结构、清单、hooks 形状、Python 可编译、敏感扫描
 
-## 已知边界
-
-- **召回质量是引擎上限**：用词鸿沟下 BGE-M3 可能漏召真条——简则已约束模型「命中不贴题换词补查」。
-- **冷启动窗**：runtime 冷启＋模型加载实测 7s+，故 hook timeout 20s、recall 14s、probe 10s；探测失败时 SessionStart 注入诊断段。
-- **未验证项**：本包在 Qoder CLI/Desktop 中的真实加载与 Stop 阻塞效果尚未真机安装验证；钩子脚本本身已用真引擎与假引擎分别跑通。Qoder 插件机制以官方文档为准：<https://docs.qoder.com/zh/cli/plugins-reference>、<https://docs.qoder.com/zh/cli/hooks-reference>。
-
 ## 反馈与贡献
 
 - 仓库与源码：<https://github.com/risense-ai/respire-qoder>
