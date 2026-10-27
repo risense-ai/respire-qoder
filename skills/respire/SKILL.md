@@ -11,7 +11,8 @@ Plugin behavior (Qoder hooks): SessionStart injects a short playbook; every User
 
 - `rsrs recall "project name + keywords" --limit 5 --json` — **recall before answering, visibly** (an empty injection never means no memory; search manually); on errors, recall by the original error text first; `--titles` returns short id + title only
 - `rsrs remember "content" --title "fact sentence" --importance important` — one item per record, judge before storing
-- `rsrs show <short-id>` (first 8 chars) reads the full body; `rsrs chain` fetches the whole causal chain
+- `rsrs show <short-id>` (first 8 chars) reads the full body plus one level of context — ancestor titles and child summaries, never grandchildren
+- `rsrs chain <short-id> --depth N --json` walks the whole causal chain before you act on a decision, error, lesson, or agreement hit: `details.ancestors` is the root-first cause chain, `details.entry` the record itself, `details.descendants` the downstream effects (BFS, N levels); the per-turn injection is titles only, so deep causes and effects exist only here
 - `rsrs forget <id>` — tombstone delete, propagated by sync
 - `rsrs candidates <content>` — pre-store candidate list (merge/attach suggestions)
 - `rsrs sync` two-way sync (autosync on); `rsrs status` checks state; `rsrs prompt` prints the full memory workflow
