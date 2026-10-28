@@ -1,7 +1,7 @@
 {
   "name": "respire-qoder",
   "displayName": "respire 记忆",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "description": "respire-qoder adds a memory layer to Qoder. Before each answer the agent recalls existing records from the memory store; a prompt starting with \"记：\" is written to the store; at the end of a turn a store check reminds the agent to save what it just learned. Records are stored encrypted on the local machine. Run rsrs register on this machine to create an account; records then sync encrypted to the cloud, and rsrs login on another device picks them up under the same account. Without an account everything stays on this machine only. Works without a sidecar model. Feedback and contributions: https://github.com/risense-ai/respire-qoder (Issues / Pull requests).",
   "descriptionZh": "respire-qoder 给 Qoder 加一层记忆。每轮回答前，agent 先召回记忆库里已有的记录；prompt 以「记：」开头就把内容写进记忆库；一轮结束时提醒 agent 把刚学到的东西存下来。记录在本机加密存储。本机执行 rsrs register 注册账号，记录加密同步到云端，在另一台设备 rsrs login 登录同一账号即可取用；不注册也能用，记录只在本机。不装模型即可用。反馈和贡献走 https://github.com/risense-ai/respire-qoder（Issue / PR）。",
   "author": {

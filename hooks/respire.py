@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.6"
+VERSION = "0.6.7"
 
 # 超时窗（秒）：须盖住 rsrs runtime 冷启动（实测 doctor 模型加载 7s+），否则首轮静默、热后即灵
 RECALL_T = 14
@@ -50,7 +50,7 @@ SKILL_PREFIX = re.compile(r"^\$\s*skill\s*:\s*\S+\s*", re.I)
 
 RULES = """【respire memory layer · attached】This session is backed by the local respire (rsrs) memory store; data is encrypted locally and synced to the cloud (account registration and login are outside this layer — rsrs register / rsrs login on this machine).
 1. Recall before answering: rsrs recall "project name + keywords" (--json for structured output, --titles for id+title only); on errors or anomalies, recall using the original error text first.
-2. Walk the causal chain: the per-turn injection and --titles are titles only, and rsrs show <short-id> gives one level (ancestor titles + child summaries). Before acting on a hit about a decision, error, lesson, or agreement, run rsrs chain <short-id> --depth 1-3 --json — details.ancestors is the root-first cause chain, details.entry the record, details.descendants the downstream effects — then follow any ancestor or descendant worth reading; a hit title alone is not the whole story.
+2. Walk the causal chain: the per-turn injection and --titles are titles only, and rsrs show <short-id> gives one level (ancestor titles + child summaries). Before acting on a hit about a decision, error, lesson, or agreement, run rsrs chain <short-id> --depth 3 --json (one integer 0-3; "--depth 1-3" is rejected) — details.ancestors is the root-first cause chain, details.entry the record, details.descendants the downstream effects — then follow any ancestor or descendant worth reading; a hit title alone is not the whole story.
 3. Store when wrapping up: rsrs remember "content" --title "fact sentence" --importance important (judge first, store immediately: similar items return candidates, decide before sending). **title is the facade for recall and dedup — extract a complete fact sentence of "subject + action + result" from the content; never use a topic label, never truncate mid-phrase**; when the prompt starts with "记：" this layer stores it first as a fallback — if the receipt includes a provisional title and short id, **extract a more precise fact sentence and replace it with rsrs retitle <short-id> --title**.
 4. Automatic recall is injected with each prompt; **if no recall was injected, the hits are off-topic, or the topic involves an earlier project, error, agreement, or date, recall again with different wording before answering (try synonyms, hypernyms, and English equivalents, one route each), and call it visibly**; do not repeat only when the injected hits are truly relevant. Prefix /nomem to disable automatic recall for this turn.
 5. Never put passwords, ID numbers, phone numbers, card numbers, or private keys into memory bodies or query terms — record only where they are stored. The library is encrypted, but a leaked key exposes everything.
