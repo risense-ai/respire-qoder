@@ -43,8 +43,13 @@ class ReleasePolicy(unittest.TestCase):
 
     def test_unsafe_archive_is_rejected(self):
         for name in ('../escape', '/absolute', 'hooks\\escape', 'hooks/hook.log', 'hooks/__pycache__/x'):
-            with self.subTest(name=name), self.assertRaises(ValueError):
-                release.verify_zip(package(extra=name), 'v0.6.8', SHA)
+            with self.subTest(name=name):
+                data = package(extra=name)
+                self.assertIn(name.encode(), data)
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    self.assertIn(name, [member.orig_filename for member in archive.infolist()])
+                with self.assertRaises(ValueError):
+                    release.verify_zip(data, 'v0.6.8', SHA)
 
     def test_input_injection_and_noncanonical_tags_are_rejected(self):
         for tag in ('main', 'v01.6.8', 'v0.6.8;echo bad', 'v0.6.8\nsha=bad'):

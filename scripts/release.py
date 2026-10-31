@@ -31,7 +31,10 @@ def verify_zip(data: bytes, tag: str, sha: str) -> None:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         if archive.comment.decode() != sha:
             raise ValueError('ZIP commit comment does not match source SHA')
-        names = archive.namelist()
+        # ZipInfo.filename is normalized by the host OS, including on read.
+        # Check the original central-directory names so Windows cannot hide an
+        # unsafe backslash member from the same rejection policy used on POSIX.
+        names = [member.orig_filename for member in archive.infolist()]
         if len(names) != len(set(names)):
             raise ValueError('Duplicate ZIP members')
         for name in names:
