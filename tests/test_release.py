@@ -23,7 +23,12 @@ def package(version='0.6.8', comment=SHA, extra=None):
         for name in ('hooks/hooks.json', 'README.md', 'LICENSE', 'skills/respire/SKILL.md'):
             archive.writestr(name, '{}')
         if extra:
-            archive.writestr(extra, '')
+            # ZipInfo's constructor normalizes backslashes on Windows. Set the
+            # raw archive name afterwards so this remains a genuinely unsafe
+            # fixture on every OS instead of silently becoming a safe path.
+            member = zipfile.ZipInfo('fixture')
+            member.filename = extra
+            archive.writestr(member, '')
     return buffer.getvalue()
 
 
@@ -38,7 +43,7 @@ class ReleasePolicy(unittest.TestCase):
 
     def test_unsafe_archive_is_rejected(self):
         for name in ('../escape', '/absolute', 'hooks\\escape', 'hooks/hook.log', 'hooks/__pycache__/x'):
-            with self.assertRaises(ValueError):
+            with self.subTest(name=name), self.assertRaises(ValueError):
                 release.verify_zip(package(extra=name), 'v0.6.8', SHA)
 
     def test_input_injection_and_noncanonical_tags_are_rejected(self):
