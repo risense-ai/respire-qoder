@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.7"
+VERSION = "0.6.8"
 
 # 超时窗（秒）：须盖住 rsrs runtime 冷启动（实测 doctor 模型加载 7s+），否则首轮静默、热后即灵
 RECALL_T = 14
@@ -47,6 +47,21 @@ STORE_PREFIX = re.compile(r"^(?:记|存|记录|记住|remember|store)\s*[:：]\s
 SKIP_PREFIX = re.compile(r"^(?:/nomem|#nomem)\b")
 # Dim 技能指认前缀：$skill: 名称 后才是真任务——技能名会词面污染召回 query，须剥掉
 SKILL_PREFIX = re.compile(r"^\$\s*skill\s*:\s*\S+\s*", re.I)
+# 疑似凭据扫描：命中则该条 prompt 不发引擎（不召回也不落库）——与 codex/pi/dsh 侧同一正则口径
+SECRET_RE = re.compile(
+    r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"
+    r"|\b(?:sk-|gh[pousr]_|github_pat_|xox[baprs]-)[A-Za-z0-9_-]{12,}"
+    r"|\bBearer\s+[A-Za-z0-9._~+/-]{12,}"
+    r"|(?:password|passwd|api[_ -]?key|token|secret|密码|口令|私钥)\s*[:=：]\s*\S+",
+    re.I)
+
+
+def contains_secret(text: str) -> bool:
+    return bool(SECRET_RE.search(text))
+
+
+SECRET_SKIP = ("【respire · skipped】The input looks like it contains a credential — it was not sent "
+               "to the memory engine. Provide only the fact with the secret removed, or a safe location pointer.")
 
 RULES = """【respire memory layer · attached】This session is backed by the local respire (rsrs) memory store; data is encrypted locally and synced to the cloud (account registration and login are outside this layer — rsrs register / rsrs login on this machine).
 1. Recall before answering: rsrs recall "project name + keywords" (--json for structured output, --titles for id+title only); on errors or anomalies, recall using the original error text first.
@@ -463,6 +478,9 @@ def on_prompt(data: dict, cfg: dict, engine) -> str:
         if isinstance(pat, str) and pat and prompt[:len(pat)].lower() == pat.lower():
             log_event(cfg, "prompt", "internal_skip", pat)
             return ""
+    if contains_secret(prompt):
+        log_event(cfg, "prompt", "secret_skip", prompt[:40])
+        return SECRET_SKIP
     m = STORE_PREFIX.match(prompt)
     if m:
         rest = prompt[m.end():].strip()
