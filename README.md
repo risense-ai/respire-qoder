@@ -107,8 +107,22 @@ cp hooks/respire.config.example.json hooks/respire.config.json
 
 ```bash
 python3 scripts/validate_plugin.py
+python3 tests/test_credential_guard.py
+python3 -m unittest discover -s tests -p test_release.py -v
 bash tests/test_hooks.sh
 ```
+
+前三项不需要真实引擎：守卫测试使用临时桩、配置和日志，强制验证普通输入确实召回，再验证凭据零调用，以及死桩必须使正向对照失败。CI 在 Linux、Windows、macOS 运行这三项。`test_hooks.sh` 是旧的真实引擎套件，不在 CI 中运行。
+
+### GitHub Actions 发布
+
+PR 和 main 推送仅测试、打包，不发布。向主仓推送 `vMAJOR.MINOR.PATCH` 标签后，工作流验证标签提交属于 main、标签版本与 manifest/hook 一致，从该提交 `git archive` 生成根目录 ZIP。发布 job 才获得仓库 `GITHUB_TOKEN` 的 `contents: write`，无需新增 PAT、OAuth 或仓库 secret。
+
+恢复一个已有标签的未完成发布：在 Actions → CI and release → Run workflow 中选择 **main**，填写已有 `tag` 与其精确 40 位提交 `expected_sha`。例如 `v0.6.8` 对应 `c969187b085f934b1edce27de25117a8591dc661`。工作流从该标签提交打包，不移动标签、不执行旧标签中的代码，也不把当前 main 当作旧标签代码。
+
+ZIP 注释记录提交 SHA；Release 同时上传 ZIP 和 `SHA256SUMS`。重复执行只接受来源标记相同且 SHA256 一致的已有资产，补齐缺失资产后发布；遇到未知来源、不同内容或额外资产即停止，绝不覆盖。上传中断时可能保留待恢复的草稿。`check` 和 `package` 默认只读；fork PR 不能进入写发布 job，工作流不使用 `pull_request_target`。
+
+隔离测试不等于真实 Qoder 宿主/引擎端到端验收，也不证明旧真实引擎套件全部通过。
 
 直接验钩子（不依赖 Qoder 是否已加载插件）：
 
