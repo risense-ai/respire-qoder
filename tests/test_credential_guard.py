@@ -11,18 +11,36 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SECRET = 'sk-' + 'q7xkwm2vbnr8tzc41p9e'
 
+
+def allowed_process(executable, argv, expected_argv, windows):
+    """Match only the complete expected invocation, including all arguments.
+
+    CPython's Windows audit event receives executable=None and the already
+    list2cmdline-encoded string; POSIX receives an executable and an argv list.
+    """
+    if executable != expected_argv[0] and not (windows and executable is None):
+        return False
+    if isinstance(argv, (list, tuple)):
+        return list(argv) == expected_argv
+    return windows and isinstance(argv, str) and argv == subprocess.list2cmdline(expected_argv)
+
+
 # Run the unmodified hook with a subprocess allowlist. A failure cannot silently
 # fall through to a real rsrs executable, even on machines where one is installed.
 LAUNCHER = r'''
 import json, os, pathlib, runpy, sys
 case = pathlib.Path(os.environ['RESPITE_CONFIG']).resolve().parent
 expected = os.environ['TEST_ENGINE']
+expected_argv = json.loads(os.environ['TEST_EXPECTED_ARGV'])
+assert expected_argv[0] == expected
 config = json.loads(pathlib.Path(os.environ['RESPITE_CONFIG']).read_text())
 assert config['rsrs'] == expected and os.access(expected, os.X_OK)
+sys.path.insert(0, str(pathlib.Path(os.environ['TEST_HOOK']).parents[1] / 'tests'))
+from test_credential_guard import allowed_process
 def audit(event, args):
     if event == 'subprocess.Popen':
         executable, argv, cwd, env = args
-        if str(executable) != expected or str(argv[0]) != expected:
+        if not allowed_process(executable, argv, expected_argv, os.name == 'nt'):
             pathlib.Path(os.environ['TEST_DENIED']).write_text('unexpected subprocess')
             raise SystemExit(91)
     elif event.startswith('socket.') or event in ('os.system', 'os.posix_spawn', 'os.exec'):
@@ -70,9 +88,11 @@ print(json.dumps({'command':'recall','status':'ok','details':[
                         PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1')
 
     def call(self, prompt):
+        env = dict(self.env, TEST_EXPECTED_ARGV=json.dumps([
+            str(self.engine), 'recall', prompt, '--limit', '5', '--titles', '--json']))
         result = subprocess.run([sys.executable, str(self.launcher)],
                                 input=json.dumps({'prompt': prompt}), text=True,
-                                encoding='utf-8', capture_output=True, env=self.env,
+                                encoding='utf-8', capture_output=True, env=env,
                                 cwd=self.case, timeout=20)
         self.assertFalse(self.denied.exists(), 'Isolation denied an external action')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -123,6 +143,32 @@ print(json.dumps({'command':'recall','status':'ok','details':[
             self.engine.write_text(f'#!{sys.executable}\nimport sys\nsys.exit(7)\n')
         with self.assertRaisesRegex(AssertionError, 'Live spy must record normal input'):
             self.positive_control()
+
+
+class ProcessAuditPolicy(unittest.TestCase):
+    def test_windows_none_executable_and_exact_commandline_are_allowed(self):
+        expected = [r'C:\temp\space name\rsrs-spy.cmd', 'recall', 'ordinary input', '--json']
+        self.assertTrue(allowed_process(None, subprocess.list2cmdline(expected), expected, True))
+
+    def test_posix_exact_executable_and_complete_argv_are_allowed(self):
+        expected = ['/tmp/rsrs-spy', 'recall', 'ordinary input', '--json']
+        self.assertTrue(allowed_process(expected[0], expected, expected, False))
+
+    def test_other_programs_arguments_and_shell_additions_are_rejected(self):
+        expected = [r'C:\temp\space name\rsrs-spy.cmd', 'recall', 'ordinary input', '--json']
+        encoded = subprocess.list2cmdline(expected)
+        for executable, argv, windows in (
+            ('cmd.exe', encoded, True),
+            ('python.exe', encoded, True),
+            (None, encoded + ' & echo unwanted', True),
+            (None, encoded + ' extra', True),
+            (None, 'cmd.exe /c ' + encoded, True),
+            (None, encoded.replace('rsrs-spy.cmd', 'rsrs-spy.cmd-other'), True),
+            (None, encoded, False),
+            (expected[0], expected + ['extra'], False),
+        ):
+            with self.subTest(executable=executable, argv=argv, windows=windows):
+                self.assertFalse(allowed_process(executable, argv, expected, windows))
 
 
 if __name__ == '__main__':
