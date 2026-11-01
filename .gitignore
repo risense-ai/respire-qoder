@@ -11,3 +11,5 @@ release-out/
 # 0.6.10 一次收尾锁/写凭证状态（data_dir 回退到脚本目录时落在 hooks/ 下）
 .latch_*
 turn_map.json
+# 0.6.11 每会话独立状态文件（st_<sid>.json；turn_map.json 为旧版遗留）
+st_*.json

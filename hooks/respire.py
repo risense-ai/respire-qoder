@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.10"
+VERSION = "0.6.11"
 
 # 超时窗（秒）：须盖住 rsrs runtime 冷启动（实测 doctor 模型加载 7s+），否则首轮静默、热后即灵
 RECALL_T = 14
@@ -213,10 +213,14 @@ def extract_title(content: str) -> str:
 
 
 TURN_FRESH_S = 1800  # 本轮写回执的新鲜度上限：超窗视为陈旧，不再据此免催
+STATE_FILES_MAX = 128  # 会话状态文件数量上限：只按数量收敛陈旧会话文件（不按时间让锁/凭证失效）
 # 一次收尾锁（复核整改）：每会话独立锁文件，O_CREAT|O_EXCL 原子独占——并发 Stop 只有一个能落锁；
 # 锁不设 TTL：只有新的真实请求（mark_prompt）会删除它重新武装；无法落锁（目录不可写等）一律放行，
-# 绝不在没有锁保护的情况下 block。写回执/时刻存于尽力维护的 per-session map（temp+rename 原子替换），
-# map 失败只损失免催优化，不影响一次上限保证。
+# 绝不在没有锁保护的情况下 block。写回执/时刻存于**每会话独立状态文件** st_<sid>.json（temp+rename
+# 原子替换）：会话只写自己的文件，没有共享 map 的读-改-写窗口——别会话（或本会话旧请求）的旧快照
+# 写回不可能恢复/覆盖本会话凭证（复审#2 轮#3）；写回执同时记录请求起始时刻（store_req_ts），
+# 始于本轮 prompt 之前的写不归属本轮，防旧请求延迟完成污染新请求。状态失败只损失免催优化，
+# 不影响一次上限保证。
 
 
 def _turn_dir():
@@ -240,37 +244,56 @@ def _latch_path(session: str):
     return os.path.join(d, ".latch_" + _sid_key(session)) if d else None
 
 
-def _map_path():
+def _state_path(session: str):
     d = _turn_dir()
-    return os.path.join(d, "turn_map.json") if d else None
+    return os.path.join(d, "st_" + _sid_key(session) + ".json") if d else None
 
 
-def _map_load() -> dict:
+def _state_load(session: str) -> dict:
     try:
-        with open(_map_path(), encoding="utf-8") as f:
+        with open(_state_path(session), encoding="utf-8") as f:
             m = json.load(f)
         return m if isinstance(m, dict) else {}
     except Exception:
         return {}
 
 
-def _map_update(session: str, patch: dict) -> bool:
-    """合并更新单会话条目（temp+rename 原子替换）；失败返回 False，绝不抛。"""
-    p = _map_path()
+def _state_prune(keep: str) -> None:
+    """只按数量收敛陈旧会话状态文件（不按时间让锁/凭证失效）。删的是旧会话的文件，
+    丢失只损失免催优化（该会话至多多催一轮，仍受一次收尾锁约束）。"""
+    try:
+        d = _turn_dir()
+        if not d:
+            return
+        names = [n for n in os.listdir(d) if n.startswith("st_") and n.endswith(".json")]
+        if len(names) <= STATE_FILES_MAX:
+            return
+        paths = [os.path.join(d, n) for n in names]
+        paths.sort(key=lambda x: os.path.getmtime(x))
+        for old in paths[:len(paths) - STATE_FILES_MAX]:
+            if os.path.abspath(old) != os.path.abspath(keep):
+                try:
+                    os.remove(old)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _state_update(session: str, patch: dict) -> bool:
+    """写本会话独立状态文件（temp+rename 原子替换）。每次只碰 st_<sid>.json 这一个文件：
+    无共享 map 的读-改-写交错——并发会话更新互不可能被对方的旧快照写回回滚；失败返回 False，绝不抛。"""
+    p = _state_path(session)
     if not p or not session:
         return False
     try:
-        m = _map_load()
-        entry = m.get(session) if isinstance(m.get(session), dict) else {}
+        entry = _state_load(session)
         entry.update(patch)
-        m[session] = entry
-        if len(m) > 64:  # 只按数量收敛陈旧会话，不按时间让锁/凭证失效
-            for k in sorted(m, key=lambda k: float(m[k].get("prompt_ts") or 0))[:len(m) - 64]:
-                m.pop(k, None)
         tmp = "%s.%d.tmp" % (p, os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(m, f)
+            json.dump(entry, f)
         os.replace(tmp, p)
+        _state_prune(p)
         return True
     except Exception:
         return False
@@ -303,26 +326,30 @@ def latch_rearm(session: str) -> None:
 
 def mark_prompt(session: str):
     """真实用户请求开始：尽力记录 prompt_ts；删除一次收尾锁（重新武装）。"""
-    _map_update(session, {"prompt_ts": time.time()})
+    _state_update(session, {"prompt_ts": time.time()})
     latch_rearm(session)
 
 
-def mark_store(session: str):
-    """本层「记：」成功回执（ok/warn + 有效 id）：尽力记录本轮已存凭证，Stop 免催。"""
-    _map_update(session, {"store_ts": time.time()})
+def mark_store(session: str, req_ts: float):
+    """本层「记：」成功回执（ok/warn + 有效 id）：记录本轮已存凭证 + 写请求起始时刻。
+    req_ts=remember 调用开始时刻：始于本轮 prompt 之后的写才归属本轮（防旧请求延迟完成污染新请求）。"""
+    _state_update(session, {"store_ts": time.time(), "store_req_ts": req_ts})
 
 
 def turn_stored(session: str) -> bool:
-    """本轮（同会话、prompt 之后、新鲜窗内）已有成功写回执。map 失效时保守返回 False。"""
+    """本轮（同会话、prompt 之后、新鲜窗内）已有成功写回执。状态文件失效时保守返回 False。"""
     if not session:
         return False
-    e = _map_load().get(session)
+    e = _state_load(session)
     if not isinstance(e, dict):
         return False
     st = e.get("store_ts")
     pt = e.get("prompt_ts")
+    rq = e.get("store_req_ts")
     if not isinstance(st, (int, float)) or not isinstance(pt, (int, float)):
         return False
+    if isinstance(rq, (int, float)) and pt > rq:
+        return False  # 写请求始于更早一轮：回执不归属本轮（旧请求延迟完成不得免催新轮）
     return st >= pt and time.time() - st < TURN_FRESH_S
 
 
@@ -339,24 +366,31 @@ def readback(bin_path: str, sid: str, title: str, content: str, cfg: dict, budge
         log_event(cfg, "readback", "error", f"{type(e).__name__}", (time.time() - t0) * 1000)
         return "unavailable"
     ms = (time.time() - t0) * 1000
-    if not isinstance(doc, dict) or doc.get("status") != "ok":
-        log_event(cfg, "readback", "not_ok", str(doc.get("status") if isinstance(doc, dict) else "?"), ms)
+    try:
+        if not isinstance(doc, dict) or doc.get("status") != "ok":
+            log_event(cfg, "readback", "not_ok", str(doc.get("status") if isinstance(doc, dict) else "?"), ms)
+            return "unavailable"
+        details = doc.get("details")
+        # 坏 details（非空数组/字符串等）类型防护：局部降级 unavailable，绝不外抛吞掉已成功的写回执（复审#2 轮#2）
+        entry = details.get("entry") if isinstance(details, dict) else None
+        if not isinstance(entry, dict):
+            log_event(cfg, "readback", "no_entry", "", ms)
+            return "unavailable"
+        summ = doc.get("summary")
+        rid = str(summ.get("id") or "") if isinstance(summ, dict) else ""
+        if rid != sid:  # 返回的是别的条目：不是本条核验通过
+            log_event(cfg, "readback", "mismatch", f"id={rid[:8]}!={sid[:8]}", ms)
+            return "mismatch"
+        et, ec = str(entry.get("title") or ""), str(entry.get("content") or "")
+        bad_title = bool(title) and et != title
+        bad_body = content.strip() != ec.strip()  # 完整正文比对（去首尾空白规范化）
+        if bad_title or bad_body:
+            log_event(cfg, "readback", "mismatch", f"title={bad_title} body={bad_body}", ms)
+            return "mismatch"
+    except Exception:
+        # 任何核验异常一律局部降级：remember 已成功（ok/warn+id），回执必须保留、禁止重发约束不变
+        log_event(cfg, "readback", "degraded", "", ms)
         return "unavailable"
-    entry = (doc.get("details") or {}).get("entry")
-    if not isinstance(entry, dict):
-        log_event(cfg, "readback", "no_entry", "", ms)
-        return "unavailable"
-    summ = doc.get("summary")
-    rid = str(summ.get("id") or "") if isinstance(summ, dict) else ""
-    if rid != sid:  # 返回的是别的条目：不是本条核验通过
-        log_event(cfg, "readback", "mismatch", f"id={rid[:8]}!={sid[:8]}", ms)
-        return "mismatch"
-    et, ec = str(entry.get("title") or ""), str(entry.get("content") or "")
-    bad_title = bool(title) and et != title
-    bad_body = content.strip() != ec.strip()  # 完整正文比对（去首尾空白规范化）
-    if bad_title or bad_body:
-        log_event(cfg, "readback", "mismatch", f"title={bad_title} body={bad_body}", ms)
-        return "mismatch"
     log_event(cfg, "readback", "verified", sid[:8], ms)
     return "verified"
 
@@ -422,7 +456,7 @@ def do_store(bin_path: str, content: str, cfg: dict, session: str = "") -> str:
 
     # —— 已写入：ok / warn（warn 也是已提交，只是带警告）——
     if parse_ok and sid and status in ("ok", "warn"):
-        mark_store(session)
+        mark_store(session, t0)
         if status == "warn":
             warns = [str(e) for e in (doc.get("errors") or []) if isinstance(e, (str, int, float))][:3]
             out = "【respire · stored】Saved with warnings"
@@ -733,14 +767,17 @@ def on_prompt(data: dict, cfg: dict, engine) -> str:
         log_event(cfg, "prompt", "nomem_or_empty", prompt[:40])
         return ""
     session = str(data.get("session_id") or "")
-    mark_prompt(session)  # /nomem 只跳召回，仍是新请求（重新武装收尾锁）（T11/T18）
     if SKIP_PREFIX.match(prompt):
+        mark_prompt(session)  # /nomem 只跳召回，仍是真实新请求（重新武装收尾锁）（T11/T18）
         log_event(cfg, "prompt", "nomem_or_empty", prompt[:40])
         return ""
     for pat in (cfg.get("skip_prefixes") or []):   # 宿主内部提示（如 Qoder Recap）白名单：不召回不落库
         if isinstance(pat, str) and pat and prompt[:len(pat)].lower() == pat.lower():
+            # 内部事件不算新真实请求：不 mark——不得删除一次收尾锁重新武装（复审#2 轮#1），
+            # 否则「真实请求→Stop deny→内部 Recap→Stop」在宿主未带 active 时会二次 deny
             log_event(cfg, "prompt", "internal_skip", pat)
             return ""
+    mark_prompt(session)  # 辨明是可识别的真实新请求后才重新武装（身份不明的内部/重放事件保守不动锁）
     if contains_secret(prompt):
         # 只记原因码，不落输入摘要——redact 盖不住普通 api_key/token/secret 赋值与 Bearer 值，摘要会泄密
         log_event(cfg, "prompt", "secret_skip")

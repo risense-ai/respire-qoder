@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.11 — 2026-11-01 · 复审第二轮整改（三项 P2）
+
+### Fixed
+
+- **内部提示不得重新武装收尾锁（轮#1）**：`on_prompt` 改序——空检查 → `/nomem`（照旧 mark，只跳召回）→ `skip_prefixes` 内部白名单（命中直接 return，**不 mark**——Qoder Recap 等宿主内部事件不算新真实请求，不删除一次收尾锁）→ `mark_prompt` → 其余。「真实请求 → Stop deny → 同会话内部 Recap → Stop」在宿主未带 `stop_hook_active` 时不再二次 deny。
+- **readback 坏 details 防护（轮#2）**：`show` 回读的 `details` 先做 `isinstance(dict)` 检查——非空数组/字符串等坏信封局部降级 `unavailable`，保留 Saved 回执与禁止重发约束；核验段整体 try 兜底，任何回读异常绝不再外抛吞掉已经成功的写回执。
+- **共享 map 读改写交错根除（轮#3）**：`turn_map.json` 单文件共享 map 改为**每会话独立状态文件 `st_<sid>.json`**（temp+rename 原子替换）——会话只写自己的文件，B 会话的旧快照写回不可能把 A 恢复成旧 `store_ts>=prompt_ts` 误免催；并发 A/B 更新互不丢失（文件级隔离）。写回执增记**写请求起始时刻 `store_req_ts`**：始于本轮 prompt 之前的写不归属本轮——旧请求延迟完成不再污染新请求的免催判定。陈旧会话文件只按数量收敛（≤128，不按时间失效），丢失只损失免催优化。
+- `.gitignore` 增 `st_*.json`（旧 `turn_map.json` 保留兼容遗留文件）；README 行为表同步（内部提示不重武装、独立状态文件、回执绑定写请求世代）。
+
+### Changed
+
+- 测试：新增内部 Recap 序列（deny→Recap→不再 deny）、坏 details 两态反例（数组/字符串，Saved 回执保留＋降级 unavailable）、跨会话隔离（B 写不免催 A 新轮）、确定性屏障交错（B 写回窗口内 A 新 prompt：A 的 prompt_ts 不回滚、旧 store 不免催、B 更新不丢失、旧请求延迟完成回执不免催新轮）。
+
 ## 0.6.10 — 2026-11-01 · 维护者复审整改（复核#1~#5＋测试可靠性 blocker）
 
 ### Fixed

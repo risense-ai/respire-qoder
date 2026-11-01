@@ -70,8 +70,9 @@ check() {   # check <名字> <实际输出> <模式: 非空|空|含:xxx|不含:x
 }
 
 # ---- 可移植引擎桩（python 实现；Windows 走 .cmd 包装——bash 脚桩 WinError 193 不可 exec）----
-# 模式：remember → rem_ok / rem_warn / rem_pend / rem_silent / rem_slow / rem_showbad；
+# 模式：remember → rem_ok / rem_warn / rem_pend / rem_silent / rem_slow / rem_showbad / rem_showarr / rem_showstr；
 #       list → fresh / stale / list_fail（STUB_LIST 独立控制）；recall → 固定一条命中。
+# rem_showarr/rem_showstr：show 回 ok 信封但 details 是非空数组/字符串（复审轮#2 坏 details 反例）。
 # POSIX 侧直接 cp+chmod 当可执行——首行必须带 python3 shebang，否则 Linux CI 上 subprocess exec 报 Exec format error。
 STUB_DIR="$TMP"; TMPN="$TMPBASE"
 cat > "$STUB_DIR/stub_engine.py" <<'PYEOF'
@@ -112,7 +113,13 @@ elif sub == "remember":
     print(json.dumps({"command": "remember", "status": "ok",
                       "summary": {"action": "created", "id": "dddddddddddddddd"}}))
 elif sub == "show":
-    if mode == "rem_showbad":
+    if mode == "rem_showarr":
+        print(json.dumps({"command": "show", "status": "ok", "summary": {"id": sys.argv[2]},
+                          "details": [{"entry": {"id": sys.argv[2], "title": "arr", "content": "arr"}}]}))
+    elif mode == "rem_showstr":
+        print(json.dumps({"command": "show", "status": "ok", "summary": {"id": sys.argv[2]},
+                          "details": "details-is-a-string"}))
+    elif mode == "rem_showbad":
         print(json.dumps({"command": "show", "status": "ok", "summary": {"id": sys.argv[2], "title": "drifted title"},
                           "details": {"entry": {"id": sys.argv[2], "title": "drifted title", "content": "drifted content"}}}))
     else:
@@ -185,6 +192,16 @@ check "超时回执禁重发" "$out" "含:Do NOT resend"
 check "超时不引导手动重发remember" "$out" "不含:run rsrs remember manually"
 out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_showbad)
 check "回读不一致如实标注" "$out" "含:DIFFERENT title/content"
+# 坏 details 反例（复审轮#2）：show 回 ok 信封但 details 非空数组/字符串——局部降级 unavailable，
+# 绝不外抛成空输出吞掉已经成功的 Saved 回执，也不误报失败/引导重发
+out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_showarr)
+check "details为数组时Saved回执不消失" "$out" "含:Saved:"
+check "details为数组时回读降级unavailable" "$out" "含:Read-back unavailable"
+check "details为数组时不误报失败" "$out" "不含:did not accept"
+out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_showstr)
+check "details为字符串时Saved回执不消失" "$out" "含:Saved:"
+check "details为字符串时回读降级unavailable" "$out" "含:Read-back unavailable"
+check "details为字符串时不误报失败" "$out" "不含:did not accept"
 
 # ---- Stop 存储检查（新契约：fail-open + 请求级凭证 + 一次收尾锁；每场景独立 reset 状态） ----
 stop_case() {  # stop_case <STUB_LIST>：reset 后单次 Stop，输出入 OUT_STOP
@@ -238,9 +255,24 @@ run_stub Stop "$STOP_JSON" ok stale >/dev/null
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "/nomem skip recall only", "session_id": "selftest"}' ok >/dev/null
 check "/nomem 轮重新武装收尾锁" "$(run_stub Stop "$STOP_JSON" ok stale)" '含:"decision": "deny"'
 check "一次收尾锁留痕" "$(grep -q 'once_latch_skip' "$TMP/hook.log" && echo YES)" "含:YES"
+# 内部提示不重新武装（复审轮#1）：Qoder Recap 白名单前缀（DEFAULTS 默认自带）不算新真实请求——
+# 序列：真实请求 → Stop deny → 同会话内部 Recap（宿主未带 stop_hook_active）→ Stop 不再 deny
+reset_state
+run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "real question before internal recap", "session_id": "selftest"}' ok >/dev/null
+check "序列:真实请求后Stop催存" "$(run_stub Stop "$STOP_JSON" ok stale)" '含:"decision": "deny"'
+check "序列:内部Recap跳过无输出" "$(run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "你正在为 Qoder 任务监控编写简短的会话 Recap。只返回一个 JSON", "session_id": "selftest"}' ok)" "空"
+check "序列:内部Recap后Stop不再deny(未重武装)" "$(run_stub Stop "$STOP_JSON" ok stale)" "空"
 reset_state
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"sessA\"}" rem_ok >/dev/null
 check "其他会话不被本会话凭证免催" "$(run_stub Stop "$STOP_JSON" ok stale)" '含:"decision": "deny"'
+# ---- 复审轮#3（行为面）：每会话独立状态文件 st_<sid>.json——A/B 隔离 ----
+# A 上轮存过且已开新轮后，B 会话的写只进 B 自己的文件：不免催 A 新轮，B 自己照常免催
+reset_state
+STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"sessA\"}" rem_ok >/dev/null
+run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "A asks a new question", "session_id": "sessA"}' ok >/dev/null
+STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"sessB\"}" rem_ok >/dev/null
+check "B会话写不免催A新轮(A/B隔离)" "$(run_stub Stop '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "sessA"}' ok stale)" '含:"decision": "deny"'
+check "B会话本轮凭证只免催自己" "$(run_stub Stop '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "sessB"}' ok stale)" "空"
 reset_state
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_ok >/dev/null
 check "记：成功后本轮凭证免催" "$(run_stub Stop "$STOP_JSON" ok stale)" "空"
@@ -402,6 +434,46 @@ check "长串不超70字" "$("$PY3" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r","'"$ROOTM"'/hooks/respire.py"); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 print(len(m.extract_title("默" * 200)))')" "非空"
+
+# ---- 复审轮#3（屏障面）：确定性交错——共享 map 读改写回滚已根除（每会话独立 st_<sid>.json）----
+# 交错：A 上轮 prompt_ts=1/store_ts=2；B 读取状态后、写回落盘前（os.replace 屏障注入），
+# A 发生新真实请求（prompt_ts=3）。旧共享 map 下 B 的旧全量快照写回会把 A 恢复成
+# store_ts>=prompt_ts 误免催；独立文件下 B 只写 st_B，A 的 st_A 不可能被碰。
+# 另验：旧请求延迟完成的写回执（写始于新 prompt 之前、完成在其后）不归属新轮、不免催。
+check "屏障交错:独立文件不被旧快照回滚" "$(BARRIER_DIR="$TMPBASE/barrier" ROOT_HOOK_M="$ROOTM" "$PY3" - <<'PY'
+import importlib.util, os, time
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK_M"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+os.environ["RESPITE_TURN_STATE"] = os.environ["BARRIER_DIR"]
+os.makedirs(os.environ["BARRIER_DIR"], exist_ok=True)
+now = time.time()
+# A 上轮：prompt 早、store 晚（旧凭证「已存且新鲜」）
+m._state_update("sessA", {"prompt_ts": now - 200.0})
+m._state_update("sessA", {"store_ts": now - 100.0, "store_req_ts": now - 150.0})
+# 确定性屏障：A 的新真实请求注入 B 状态写回的瞬间（rename 落盘前）
+bpath = os.path.abspath(m._state_path("sessB"))
+real_replace, fired = os.replace, [False]
+def replace_barrier(src, dst):
+    if os.path.abspath(dst) == bpath and not fired[0]:
+        fired[0] = True
+        m._state_update("sessA", {"prompt_ts": now})  # A 的新真实请求落在 B 的写回窗口内
+    return real_replace(src, dst)
+os.replace = replace_barrier
+try:
+    m._state_update("sessB", {"store_ts": now, "store_req_ts": now - 50.0})  # B 写自己的状态（旧实现是整份共享 map 写回）
+finally:
+    os.replace = real_replace
+checks = [
+    m._state_load("sessA").get("prompt_ts") == now,  # A 的 prompt_ts 未被 B 的旧快照回滚
+    not m.turn_stored("sessA"),                      # A 旧 store(<新 prompt) 不免催本轮
+    m._state_load("sessB").get("store_ts") == now,   # B 的并发更新未丢失
+]
+# 旧请求延迟完成：写始于新 prompt 之前、完成在其后——回执不归属新轮，不免催
+m._state_update("sessA", {"store_ts": now + 1.0, "store_req_ts": now - 300.0})
+checks.append(not m.turn_stored("sessA"))
+print("OK" if all(checks) else "BAD:%r" % (checks,))
+PY
+)" "含:OK"
 
 # ---- 写探针（--store 显式开启；写真库→断言→forget 清理） ----
 if [ "$WITH_STORE" = 1 ] && [ "$HAVE_RSRS" = 1 ]; then
