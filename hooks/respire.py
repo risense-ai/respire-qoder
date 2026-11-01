@@ -3,6 +3,7 @@
 # 与 Dim 版 respire-dimcode 同一思路：SessionStart 注简则、UserPromptSubmit 每轮召回、Stop 存储检查。
 # 用法: python3 respire.py <SessionStart|UserPromptSubmit|Stop>   （事件 JSON 走 stdin）
 # 铁律: fail-open —— 任何异常 → 空 stdout、exit 0（协议里即「无决策、放行」），绝不 exit 2。
+#       查询类失败（Stop 的 list）同样放行：记忆层故障不得强迫主任务续跑。
 from __future__ import annotations
 
 import datetime
@@ -14,14 +15,19 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.8"
+VERSION = "0.6.9"
 
 # 超时窗（秒）：须盖住 rsrs runtime 冷启动（实测 doctor 模型加载 7s+），否则首轮静默、热后即灵
 RECALL_T = 14
 PROBE_T = 10
 STORE_T = 18
 LIST_T = 6    # Stop 查「最近一条落库时间」的窗口（实测 list ~0.9s，热后即回）
+SHOW_T = 8    # 写后回读（show）窗口；实际用时按 hook 预算自适应收缩
 LOG_MAX = 256 * 1024  # hook.log 超此整文件清轮
+
+if os.environ.get("RESPITE_TEST_FAST") == "1":   # 测试后门：把全部超时压到秒级（同族 RESPITE_FAKE_*）
+    RECALL_T = PROBE_T = STORE_T = SHOW_T = 2
+    LIST_T = 1
 
 DEFAULTS = {
     "rsrs": "",                 # respire 引擎（rsrs）路径；空 = 自动探测
@@ -206,47 +212,260 @@ def extract_title(content: str) -> str:
     return head                                       # 无标点长串才落到 70 字上界
 
 
-def do_store(bin_path: str, content: str, cfg: dict) -> str:
-    """显式落库：判后即存三态——ok 直写 / pending 给候选待决 / 其余为失败，皆回执不静默。"""
+TURN_FRESH_S = 1800  # 本轮写回执的新鲜度上限：超窗视为陈旧，不再据此免催
+LATCH_WINDOW_S = 600  # 一次收尾锁窗口：每个真实请求至多 deny 一次（stop_hook_active 之外的本层保险）
+
+
+def _turn_path() -> str:
+    return os.environ.get("RESPITE_TURN_STATE") or os.path.join(data_dir(), ".store_turn")
+
+
+def _turn_load() -> dict:
+    """轮次状态（.store_turn）：{session, prompt_ts, store_ts, stop_block_ts}。
+    以「同会话、prompt 之后」为本轮凭证——取代旧的『近 10 分钟全局写入』跨轮抑制。"""
+    try:
+        with open(_turn_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            return d
+    except Exception:
+        pass
+    return {}
+
+
+def _turn_save(entry: dict):
+    try:
+        with open(_turn_path(), "w", encoding="utf-8") as f:
+            json.dump(entry, f)
+    except Exception:
+        pass
+
+
+def _turn_num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def mark_prompt(session: str):
+    """真实用户请求开始：推进 prompt_ts、清一次收尾锁（新请求重新武装收尾预算）。"""
+    e = _turn_load()
+    if session and e.get("session") != session:
+        e = {"session": session}
+    e["session"] = session or e.get("session", "")
+    e["prompt_ts"] = time.time()
+    e.pop("stop_block_ts", None)
+    _turn_save(e)
+
+
+def mark_store(session: str):
+    """本层「记：」成功回执（ok/warn + 有效 id）：记录本轮已存凭证，Stop 免催。"""
+    e = _turn_load()
+    if session and e.get("session") != session:
+        e = {"session": session}
+    e["session"] = session or e.get("session", "")
+    e["store_ts"] = time.time()
+    _turn_save(e)
+
+
+def turn_stored(session: str) -> bool:
+    """本轮（同会话、prompt 之后、新鲜窗内）已有成功写回执。"""
+    if not session:
+        return False
+    e = _turn_load()
+    if e.get("session") != session:
+        return False
+    st, pt = _turn_num(e.get("store_ts")), _turn_num(e.get("prompt_ts"))
+    if st is None or pt is None:
+        return False
+    return st >= pt and time.time() - st < TURN_FRESH_S
+
+
+def turn_prompt_ts(session: str):
+    """本会话最近一次真实 prompt 的时刻（引擎侧写入须晚于它才算本轮已存）。"""
+    if not session:
+        return None
+    e = _turn_load()
+    if e.get("session") != session:
+        return None
+    return _turn_num(e.get("prompt_ts"))
+
+
+def stop_latch_active(session: str) -> bool:
+    """一次收尾锁：本轮已 deny 过就不再催（防宿主未带 stop_hook_active 的重复 Stop）。"""
+    e = _turn_load()
+    bt, pt = _turn_num(e.get("stop_block_ts")), _turn_num(e.get("prompt_ts"))
+    if bt is None:
+        return False
+    if session and e.get("session") != session:
+        return False
+    if pt is not None and pt > bt:
+        return False  # deny 之后又来了新请求 → 重新武装
+    return time.time() - bt < LATCH_WINDOW_S
+
+
+def mark_stop_block(session: str):
+    e = _turn_load()
+    if session and e.get("session") != session:
+        e = {"session": session}
+    e["session"] = session or e.get("session", "")
+    e["stop_block_ts"] = time.time()
+    _turn_save(e)
+
+
+def readback(bin_path: str, sid: str, title: str, content: str, cfg: dict, budget_s: float):
+    """写后核验（R11）：show 回读，校验条目存在且标题/正文头一致。
+    返回 verified / mismatch / unavailable；超预算直接 unavailable。"""
+    if budget_s < 2:
+        return "unavailable"
+    t0 = time.time()
+    try:
+        r = run_rsrs(bin_path, ["show", sid, "--json"], min(SHOW_T, max(2, int(budget_s))))
+        doc = json.loads(r.stdout) if r.stdout else {}
+    except Exception as e:
+        log_event(cfg, "readback", "error", f"{type(e).__name__}", (time.time() - t0) * 1000)
+        return "unavailable"
+    ms = (time.time() - t0) * 1000
+    if not isinstance(doc, dict) or doc.get("status") != "ok":
+        log_event(cfg, "readback", "not_ok", str(doc.get("status") if isinstance(doc, dict) else "?"), ms)
+        return "unavailable"
+    entry = (doc.get("details") or {}).get("entry")
+    if not isinstance(entry, dict):
+        log_event(cfg, "readback", "no_entry", "", ms)
+        return "unavailable"
+    et, ec = str(entry.get("title") or ""), str(entry.get("content") or "")
+    head = content.strip()[:40]
+    bad_title = bool(title) and et != title
+    bad_body = bool(head) and head not in ec
+    if bad_title or bad_body:
+        log_event(cfg, "readback", "mismatch", f"title={bad_title} body={bad_body}", ms)
+        return "mismatch"
+    log_event(cfg, "readback", "verified", sid[:8], ms)
+    return "verified"
+
+
+def verify_recent_write(bin_path: str, t0: float):
+    """未知写结果的只读核实（R10）：list 近 3 条里是否有 t0 之后落库的条目。返回 (id, title) 或 None。"""
+    try:
+        d, ok = _last_store_detail(bin_path)
+    except Exception:
+        return None
+    if not ok or not isinstance(d, dict):
+        return None
+    ts = None
+    for k in ("updated_at", "created_at"):
+        v = _epoch(d.get(k))
+        if v is not None and (ts is None or v > ts):
+            ts = v
+    if ts is None or ts < t0 - 0.05:  # 引擎时间戳毫秒截断留 50ms 容差；更早的写入不归属本次
+        return None
+    return str(d.get("id") or ""), str(d.get("title") or "")
+
+
+def do_store(bin_path: str, content: str, cfg: dict, session: str = "") -> str:
+    """显式落库回执状态机（对齐 CLI 信封语义，审计报告 §7.1/§7.2）：
+      ok + summary.id   → 已写入：show 回读核验后回执（verified/mismatch/unavailable 如实标注）
+      warn + summary.id → 已写入但有警告（parent 未解析 / post-remember hook 告警）——
+                          绝不当失败、绝不引导重发；附 errors 摘要并回读
+      pending           → 未写入：转述候选（items 带短 id）＋引擎建议动作（改＞并＞挂＞存）
+      超时/中止          → 结果未知：不再发引擎调用（预算已耗尽）；回执只允许只读核实
+      坏信封/无输出      → 结果未知：先只读查库（list 近 3 条），禁止自动重写
+      其余明确拒绝态     → fail：转述 errors，不自动重试
+    """
     if not content:
         log_event(cfg, "store", "empty_content")
         return ""
     title = extract_title(content) or "respire quick store"
     t0 = time.time()
+    r = None
     try:
         r = run_rsrs(bin_path, ["remember", content, "--title", title,
                                 "--importance", "important", "--json"], STORE_T)
     except Exception as e:
         log_event(cfg, "store", "timeout_or_error", f"{type(e).__name__}: {e}", (time.time() - t0) * 1000)
-        return "【respire · store】respire timed out; run rsrs remember manually to verify whether it was written."
     ms = (time.time() - t0) * 1000
-    try:
-        doc = json.loads(r.stdout) if r.stdout else {}
-    except Exception:
-        doc = {}
+    doc, parse_ok = {}, False
+    if r is not None and r.stdout and r.stdout.strip():
+        try:
+            doc = json.loads(r.stdout)
+            parse_ok = True
+        except Exception:
+            doc, parse_ok = {}, False
     if not isinstance(doc, dict):
         doc = {}
     status = str(doc.get("status") or "")
-    if status == "ok":
-        sid = str((doc.get("summary") or {}).get("id") or "")
-        log_event(cfg, "store", "ok", sid[:8], ms)
-        tail = f" ({sid[:8]})" if sid else ""
-        return (f"【respire · stored】Saved: {title}{tail}. The title is a rule-based provisional one — "
-                "extract a complete \"subject + action + result\" fact sentence from the content and "
-                f"replace it with rsrs retitle {sid[:8]} --title (title is the facade for recall and dedup).")
-    if status == "pending":
-        # 判后即存判定疑似重复/可挂靠，未写入（written:false）——转述候选，模型接续决断
+    sid = str((doc.get("summary") or {}).get("id") or "") if parse_ok else ""
+
+    # —— 已写入：ok / warn（warn 也是已提交，只是带警告）——
+    if parse_ok and sid and status in ("ok", "warn"):
+        mark_store(session)
+        if status == "warn":
+            warns = [str(e) for e in (doc.get("errors") or []) if isinstance(e, (str, int, float))][:3]
+            out = "【respire · stored】Saved with warnings"
+            if warns:
+                out += " (" + "; ".join(warns)[:160] + ")"
+            out += f": {title} ({sid[:8]})."
+            log_event(cfg, "store", "warn_written", f"{sid[:8]} warn={len(warns)}", ms)
+        else:
+            out = f"【respire · stored】Saved: {title} ({sid[:8]})."
+            log_event(cfg, "store", "ok", sid[:8], ms)
+        rb = readback(bin_path, sid, title, content, cfg, 19.0 - (time.time() - t0))
+        if rb == "verified":
+            out += " Write verified by read-back (entry exists; title and content match)."
+        elif rb == "mismatch":
+            out += (" Read-back shows a DIFFERENT title/content than sent — inspect rsrs show "
+                    f"{sid[:8]} before any retitle.")
+        else:
+            out += f" Read-back unavailable — if it matters, verify with rsrs show {sid[:8]}."
+        out += (" The title is a rule-based provisional one — extract a complete \"subject + action + result\" "
+                "fact sentence from the content and replace it with rsrs retitle "
+                f"{sid[:8]} --title (title is the facade for recall and dedup).")
+        return out
+
+    # —— 未写入：pending 候选（含 pre-remember veto 等一切 pending 态）——
+    if parse_ok and status == "pending":
         log_event(cfg, "store", "pending", f"cand={len(doc.get('items') or [])}", ms)
-        lines = ["【respire · store pending】respire judged this item similar to existing memory; nothing was written. Candidates:"]
+        lines = ["【respire · store pending】respire judged this item similar to existing memory (or a hook vetoed it); "
+                 "nothing was written. Candidates (read bodies with rsrs show <short-id> before deciding):"]
         for it in (doc.get("items") or [])[:5]:
             if isinstance(it, dict):
-                lines.append(f"- [{it.get('name', '?')}] {it.get('value', '')}")
-        lines.append("Decide: to attach, rerun rsrs remember with the same text --parent <id>; if it is genuinely independent, add --force to write it directly.")
+                act = f" — suggested: {it['action']}" if it.get("action") else ""
+                lines.append(f"- [{it.get('name', '?')}] {it.get('value', '')}{act}")
+        acts = [str(a) for a in (doc.get("actions") or []) if isinstance(a, str) and a.strip()][:6]
+        if acts:
+            lines.append("Engine-suggested next actions (prefer merge > attach > new; decide from candidate bodies, never blind-force):")
+            lines.extend(f"  {a}" for a in acts)
+        else:
+            lines.append("Decide: read the candidates above, then merge/attach with the suggested ids, "
+                         "or add --force only if genuinely independent.")
         return "\n".join(lines)
-    errs = doc.get("errors") or []
-    msg = json.dumps(errs, ensure_ascii=False)[:200] if errs else f"status={status or r.returncode}"
-    log_event(cfg, "store", "fail", msg, ms)
-    return f"【respire · store failed】respire did not accept it: {msg}"
+
+    # —— 明确拒绝（可解析但非上述状态）——
+    if parse_ok and status:
+        errs = doc.get("errors") or []
+        msg = json.dumps(errs, ensure_ascii=False)[:200] if errs else f"status={status or r.returncode}"
+        log_event(cfg, "store", "fail", msg, ms)
+        return f"【respire · store failed】respire did not accept it: {msg}"
+
+    # —— 结果未知：坏信封/无输出（engine 秒回，尚有预算）→ 先只读查库 ——
+    if r is not None:
+        try:
+            hit = verify_recent_write(bin_path, t0)
+        except Exception:
+            hit = None
+        if hit:
+            hid, htitle = hit
+            log_event(cfg, "store", "unknown_maybe_written", hid[:8], (time.time() - t0) * 1000)
+            return ("【respire · store unknown】The write result is unknown (unreadable receipt), and a fresh entry "
+                    f"appeared in the store — it may already be written: [{hid[:8]}] {htitle}. Verify read-only with "
+                    f"rsrs show {hid[:8]}; do NOT resend rsrs remember for the same fact.")
+        log_event(cfg, "store", "unknown", f"parse={parse_ok} rc={r.returncode}", ms)
+        return ("【respire · store unknown】The write result is unknown (engine returned an unreadable receipt). "
+                "Verify read-only: rsrs list --limit 3 --json, then rsrs show <id>. Do NOT resend rsrs remember "
+                "for the same fact — resending can duplicate an already-committed write.")
+    # —— 超时/中止（预算已耗尽，不再发引擎调用）——
+    log_event(cfg, "store", "unknown_timeout", "", ms)
+    return ("【respire · store unknown】The write result is unknown (engine timed out). Verify read-only: "
+            "rsrs list --limit 3 --json, then rsrs show <id>. Do NOT resend rsrs remember for the same fact — "
+            "resending can duplicate an already-committed write.")
 
 
 def do_recall(bin_path: str, prompt: str, cfg: dict) -> str:
@@ -386,26 +605,56 @@ def _epoch(rfc3339):
     return dt.timestamp()
 
 
-def engine_last_store(engine, timeout: int = LIST_T):
-    """问引擎最近一条记录的落库时间（秒级 epoch），取 top3 的 updated/created 最大值。
-    agent 直接跑 rsrs remember 不写本层 hook.log，节流必须问库才看得见。失败返回 None（放行给上层催）。"""
-    r = run_rsrs(engine, ["list", "--limit", "3", "--json"], timeout)
-    doc = json.loads(r.stdout) if r.stdout else None
-    dets = doc.get("details") if isinstance(doc, dict) else None
-    best = None
-    for d in (dets or []):
+def _last_store_detail(engine, timeout: int = LIST_T):
+    """问引擎最近一条记录（list 近 3 条取 updated/created 最新者）。
+    返回 (detail|None, query_ok)：query_ok=False = 查询失败/超时/坏信封——
+    调用方必须放行（fail-open），不得据「查不到」催存。"""
+    try:
+        r = run_rsrs(engine, ["list", "--limit", "3", "--json"], timeout)
+    except Exception:
+        return None, False
+    try:
+        doc = json.loads(r.stdout) if r.stdout else None
+    except Exception:
+        return None, False
+    if not isinstance(doc, dict) or doc.get("status") != "ok":
+        return None, False
+    best, best_ts = None, None
+    for d in (doc.get("details") or []):
         if not isinstance(d, dict):
             continue
+        ts = None
         for k in ("updated_at", "created_at"):
             v = _epoch(d.get(k))
-            if v is not None and (best is None or v > best):
-                best = v
-    return best
+            if v is not None and (ts is None or v > ts):
+                ts = v
+        if ts is not None and (best_ts is None or ts > best_ts):
+            best, best_ts = d, ts
+    return best, True
+
+
+def engine_last_store(engine, timeout: int = LIST_T):
+    """最近一条落库时间（epoch 秒）。返回 (best|None, query_ok)。"""
+    d, ok = _last_store_detail(engine, timeout)
+    if not ok or not isinstance(d, dict):
+        return None, ok
+    ts = None
+    for k in ("updated_at", "created_at"):
+        v = _epoch(d.get(k))
+        if v is not None and (ts is None or v > ts):
+            ts = v
+    return ts, True
 
 
 def on_stop(data: dict, cfg: dict, engine) -> str:
-    """Stop 存储检查：干完活的存储提示（block+reason 续跑一轮）。
-    规范防循环：续跑轮 stdin 带 stop_hook_active=true → 放行。"""
+    """Stop 存储检查：干完活的存储提示（deny+reason 续跑一轮）。
+    规范防循环：续跑轮 stdin 带 stop_hook_active=true → 放行。
+    审计整改后的免催/放行契约（DM-01/DM-03/DM-04）：
+      - 查库失败/超时/坏信封 → 放行（fail-open：记忆层故障不得拦主任务）
+      - 本轮已有成功写回执（同会话、prompt 之后）→ 放行
+      - 引擎侧写入晚于本轮 prompt（同会话；agent 自行 rsrs remember）→ 放行
+      - 每个真实请求至多 block 一次（stop_hook_active ＋ 本层一次收尾锁双保险）
+      - 缺会话/轮次凭证时不免催（宁可多一轮有界收尾，不做跨轮误抑制）"""
     if data.get("stop_hook_active") is True:
         log_event(cfg, "stop", "active_skip")
         return ""
@@ -431,37 +680,28 @@ def on_stop(data: dict, cfg: dict, engine) -> str:
             return ""
     except Exception:
         pass
-    now = time.time()
-    try:  # 近 10 分钟本层已落库过 → 不再催（记忆活跃）：钩子侧「记：」路径写本层日志
-        logp = os.environ.get("RESPITE_LOG") or os.path.join(data_dir(), "hook.log")
-        if os.path.exists(logp):
-            with open(logp, encoding="utf-8", errors="replace") as f:
-                for ln in f.readlines()[-50:]:
-                    try:
-                        r = json.loads(ln)
-                    except Exception:
-                        continue
-                    if r.get("ev") == "store" and r.get("out") == "ok":
-                        try:
-                            ts = time.mktime(time.strptime(r.get("ts", ""), "%Y-%m-%dT%H:%M:%S"))
-                        except Exception:
-                            continue
-                        if now - ts < 600:
-                            log_event(cfg, "stop", "stored_recent_skip", "src=hooklog")
-                            return ""
+    session = str(data.get("session_id") or "")
+    if stop_latch_active(session):
+        log_event(cfg, "stop", "once_latch_skip")
+        return ""
+    if turn_stored(session):
+        log_event(cfg, "stop", "stored_turn_skip", "src=receipt")
+        return ""
+    try:
+        ts, ok = engine_last_store(engine)
     except Exception:
-        pass
-    try:  # 近 10 分钟引擎侧有落库（agent 直接 rsrs remember/updates）→ 同样不催，问库而非看日志
-        if engine:
-            t1 = time.time()
-            ts = engine_last_store(engine)
-            if ts is not None and now - ts < 600:
-                log_event(cfg, "stop", "stored_recent_skip", "src=engine", (time.time() - t1) * 1000)
-                return ""
-    except Exception:
-        pass
+        ts, ok = None, False
+    if not ok:
+        log_event(cfg, "stop", "engine_query_fail_open")  # 查库故障放行，不催存
+        return ""
+    if ts is not None:
+        pts = turn_prompt_ts(session)
+        now = time.time()
+        if pts is not None and pts <= ts <= now + 5:
+            log_event(cfg, "stop", "stored_recent_skip", "src=engine")
+            return ""
+    mark_stop_block(session)
     log_event(cfg, "stop", "nudge")
-    # Qoder 的 Stop 支持阻塞：decision=deny 等价 exit 2，把 reason 交回模型续跑一轮。
     return json.dumps({"decision": "deny", "reason": STORE_NUDGE}, ensure_ascii=False)
 
 
@@ -482,13 +722,15 @@ def on_prompt(data: dict, cfg: dict, engine) -> str:
         # 只记原因码，不落输入摘要——redact 盖不住普通 api_key/token/secret 赋值与 Bearer 值，摘要会泄密
         log_event(cfg, "prompt", "secret_skip")
         return SECRET_SKIP
+    session = str(data.get("session_id") or "")
+    mark_prompt(session)  # 真实请求凭证：Stop 的免催/一次收尾锁都锚定到它（T11/T18）
     m = STORE_PREFIX.match(prompt)
     if m:
         rest = prompt[m.end():].strip()
         if not engine:
             log_event(cfg, "store", "engine_missing", prompt[:40])
             return NO_RSRS
-        return do_store(engine, rest, cfg)
+        return do_store(engine, rest, cfg, session)
     if len(prompt) < int(cfg["min_prompt_chars"]):
         log_event(cfg, "prompt", "too_short", prompt[:40])
         return ""

@@ -21,9 +21,9 @@ Plugin behavior (Qoder hooks): SessionStart injects a short playbook; every User
 ## Parsing notes (CLI envelope)
 
 - Every command with `--json` uses one envelope: `status`, `summary`, `items`, `details`, `errors`; **failures also return HTTP 200 with `status:"fail"` and `errors[]`** — check status, not the exit code
-- recall scores and entries live in `details[].score` and `details[].entry` (full id; use the first 8 chars as the short id); `items` is only the "score title" line
+- recall scores and entries live in `details[].score` and `details[].id` / `details[].title` (full id; use the first 8 chars as the short id); nested `entry` objects are the `show`/`chain` envelope (`details.entry`), not the titles tier
 - Progress goes to stderr; never mix it into JSON with `2>&1`
-- remember stores after judgement: `status:"ok"` means written (`summary.id`); `status:"pending"` plus `written:false` means a similar record was found and **nothing was written** — attach with `--parent <id>` or force with `--force`
+- remember stores after judgement: `status:"ok"` means written (`summary.id`); `status:"warn"` with a valid `summary.id` is ALSO already written (with warnings, e.g. an unresolvable parent) — never re-send it; `status:"pending"` plus `written:false` means a similar record was found and **nothing was written** — read the candidate bodies (`rsrs show <short-id>`), then prefer merge (`--merge-ids`) > attach (`--parent`) > new (`--force`)
 - The default `trivial` tier goes to the diary area, is excluded from recall and gets its title rewritten to "activity track <date>" — use `--importance important` for factual records
 
 ## Data safety (user-facing)

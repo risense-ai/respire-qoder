@@ -67,8 +67,8 @@ npm i -g rsrs-cli@latest
 | --- | --- |
 | `SessionStart` | 注入记忆使用规则（何时召回、如何写入、限制）；一次探测，三种提示：未登录附注册引导，记忆库为空（<10 条）附首日使用引导，缺语义模型附可选安装说明；配置齐全时不提示 |
 | `UserPromptSubmit` | 自动执行 `rsrs recall --titles`，只注入分数＋8 位短 id＋标题，正文由 agent 用 `rsrs show <id>` 按需读取。默认不设过滤阈值，噪音由三处控制：引擎 skip 门、limit 5、标题形式注入 |
-| prompt 以「记：」「存：」「remember:」开头 | 直接 `rsrs remember … --importance important` 写入并回执；引擎判为相似时不写入，把候选原样转述给模型决定（`--parent` 挂靠或 `--force` 直写）；回执要求模型抽「主语＋动作＋结果」事实句并 `retitle` 替换暂拟题 |
-| `Stop` | 存储检查：`decision: deny` 续跑一轮，提示把本轮新的事实、决定、约定、教训分条写入；`stop_hook_active=true` 时放行，防止循环；`store_nudge_every` 节流；近 10 分钟本库有过写入（问引擎 `list` 取最近 `updated_at`，覆盖 agent 直接 `rsrs remember`）则本轮不再提示 |
+| prompt 以「记：」「存：」「remember:」开头 | 直接 `rsrs remember … --importance important` 写入并回执，**回执按结果状态机**：`ok`/`warn` → **已写入**（warn 附引擎警告如 parent 未解析——不误报失败、不引导重发），随后 `show` 写后回读核验（verified / mismatch / unavailable 如实标注）；`pending` → **未写入**，转述候选（带短 id）＋引擎建议动作（改＞并＞挂＞存全量转达，先 `show` 读候选正文再决断）；超时/坏回执 → **结果未知**，回执只允许只读核实（`rsrs list`/`rsrs show`）并**明令禁止重发**（重复写风险）。回执要求模型抽「主语＋动作＋结果」事实句并 `retitle` 替换暂拟题 |
+| `Stop` | 存储检查：`decision: deny` 续跑一轮，提示把本轮新的事实、决定、约定、教训分条写入。**每个真实请求至多催一次**：`stop_hook_active=true` 放行 ＋ 本层请求级一次收尾锁双保险（新 prompt 重新武装）。**免催凭证按请求判断**：同会话、本轮 prompt 之后的成功写回执（`ok`/`warn`+id）或引擎侧写入（`list` 最近 `updated_at` 晚于本轮 prompt）才免催——旧「近 10 分钟任意写入」跨轮误抑制已移除；缺凭证时宁可多一轮有界收尾。**查库失败/超时/坏信封一律 fail-open 放行**：记忆层故障不得拦主任务结束。`store_nudge_every` 节流（1=每轮，0=关，N=每 N 轮） |
 | `/nomem` 前缀 | 本轮跳过召回 |
 | `$skill: 名称` 前缀 | 召回前剥除，避免技能名干扰召回查询 |
 | `skills/respire` | 按需加载的完整操作法；动作全由钩子驱动 |
