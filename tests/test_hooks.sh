@@ -4,6 +4,7 @@
 # 加 --store 才跑写探针（写真库→回执断言→rsrs forget 自清理）。
 # 无 rsrs 引擎（如三平台 CI）时真库分支记 SKIP；桩状态机/凭据守卫/纯函数套件零引擎依赖，照常执行。
 set -u
+export PYTHONUTF8=1  # GitHub Windows runner 的 python 默认 cp1252：打印中文断言会 UnicodeEncodeError
 export MSYS2_ENV_CONV_EXCL='PROMPT_VAL'  # MSYS 连 env 值都会把「/nomem …」转成 Windows 路径——只豁免 prompt 变量
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # PY3 探测：优先 python3（unix/CI），退 python / py（windows-latest 的 bash 无 python3 shim）；
