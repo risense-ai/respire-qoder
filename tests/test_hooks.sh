@@ -264,18 +264,19 @@ check "序列:内部Recap跳过无输出" "$(run_stub UserPromptSubmit '{"hook_e
 check "序列:内部Recap后Stop不再deny(未重武装)" "$(run_stub Stop "$STOP_JSON" ok stale)" "空"
 reset_state
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"sessA\"}" rem_ok >/dev/null
-check "其他会话不被本会话凭证免催" "$(run_stub Stop "$STOP_JSON" ok stale)" '含:"decision": "deny"'
+check "其他会话不被本会话磁盘记录免催(latch隔离)" "$(run_stub Stop "$STOP_JSON" ok stale)" '含:"decision": "deny"'
 # ---- 复审轮#3（行为面）：每会话独立状态文件 st_<sid>.json——A/B 隔离 ----
-# A 上轮存过且已开新轮后，B 会话的写只进 B 自己的文件：不免催 A 新轮，B 自己照常免催
+# 终案后状态文件仅作诊断轨迹：A/B 各自的磁盘记录都不免催任何 Stop（多催方向），
+# A/B 隔离仍由「每会话独立 latch + 独立状态文件」保证（B 的写不碰 A 的文件）。
 reset_state
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"sessA\"}" rem_ok >/dev/null
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "A asks a new question", "session_id": "sessA"}' ok >/dev/null
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"sessB\"}" rem_ok >/dev/null
 check "B会话写不免催A新轮(A/B隔离)" "$(run_stub Stop '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "sessA"}' ok stale)" '含:"decision": "deny"'
-check "B会话本轮凭证只免催自己" "$(run_stub Stop '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "sessB"}' ok stale)" "空"
+check "B会话本轮磁盘记录也不免催自己(免催已取消)" "$(run_stub Stop '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "sessB"}' ok stale)" '含:"decision": "deny"'
 reset_state
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_ok >/dev/null
-check "记：成功后本轮凭证免催" "$(run_stub Stop "$STOP_JSON" ok stale)" "空"
+check "记：成功后Stop仍deny(磁盘凭证免催已取消)" "$(run_stub Stop "$STOP_JSON" ok stale)" '含:"decision": "deny"'
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "new turn after store", "session_id": "selftest"}' ok >/dev/null
 check "下一轮不被上一轮成功写误抑制(应催)" "$(run_stub Stop "$STOP_JSON" ok stale)" '含:"decision": "deny"'
 CFG_NUDGE0="$TMP/config-nudge0.json"
@@ -435,11 +436,12 @@ import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r","'"$ROOTM"'/hooks/respire.py"); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 print(len(m.extract_title("默" * 200)))')" "非空"
 
-# ---- 复审轮#3（屏障面）：确定性交错——共享 map 读改写回滚已根除（每会话独立 st_<sid>.json）----
+# ---- 复审轮#3（屏障面）＋复核④终案：确定性交错——共享 map 读改写回滚已根除（每会话独立 st_<sid>.json）----
 # 交错：A 上轮 prompt_ts=1/store_ts=2；B 读取状态后、写回落盘前（os.replace 屏障注入），
 # A 发生新真实请求（prompt_ts=3）。旧共享 map 下 B 的旧全量快照写回会把 A 恢复成
 # store_ts>=prompt_ts 误免催；独立文件下 B 只写 st_B，A 的 st_A 不可能被碰。
-# 另验：旧请求延迟完成的写回执（写始于新 prompt 之前、完成在其后）不归属新轮、不免催。
+# 终案后磁盘凭证免催已取消：turn_stored 恒 False——断言恒不因任何磁盘记录免催（多催方向），
+# 状态文件仅作诊断轨迹，防回滚保证不再牵涉免催判定。
 check "屏障交错:独立文件不被旧快照回滚" "$(BARRIER_DIR="$TMPBASE/barrier" ROOT_HOOK_M="$ROOTM" "$PY3" - <<'PY'
 import importlib.util, os, time
 spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK_M"], "hooks", "respire.py"))
@@ -465,10 +467,10 @@ finally:
     os.replace = real_replace
 checks = [
     m._state_load("sessA").get("prompt_ts") == now,  # A 的 prompt_ts 未被 B 的旧快照回滚
-    not m.turn_stored("sessA"),                      # A 旧 store(<新 prompt) 不免催本轮
+    not m.turn_stored("sessA"),                      # 免催已取消（复核④终案）：恒不因磁盘记录免催
     m._state_load("sessB").get("store_ts") == now,   # B 的并发更新未丢失
 ]
-# 旧请求延迟完成：写始于新 prompt 之前、完成在其后——回执不归属新轮，不免催
+# 旧请求延迟完成：写始于新 prompt 之前、完成在其后——同样恒不免催（终案：任何磁盘记录都不免催）
 m._state_update("sessA", {"store_ts": now + 1.0, "store_req_ts": now - 300.0})
 checks.append(not m.turn_stored("sessA"))
 print("OK" if all(checks) else "BAD:%r" % (checks,))

@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "risense-ai plugins for Qoder. Current plugin: respire-qoder, a memory layer with optional encrypted cloud sync. Repo / issues / PRs: https://github.com/risense-ai/respire-qoder · Site: https://rsrs.rs",
-    "version": "1.0.1"
+    "version": "1.0.2"
   },
   "plugins": [
     {

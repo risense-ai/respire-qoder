@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.11"
+VERSION = "0.6.12"
 
 # 超时窗（秒）：须盖住 rsrs runtime 冷启动（实测 doctor 模型加载 7s+），否则首轮静默、热后即灵
 RECALL_T = 14
@@ -212,15 +212,14 @@ def extract_title(content: str) -> str:
     return head                                       # 无标点长串才落到 70 字上界
 
 
-TURN_FRESH_S = 1800  # 本轮写回执的新鲜度上限：超窗视为陈旧，不再据此免催
-STATE_FILES_MAX = 128  # 会话状态文件数量上限：只按数量收敛陈旧会话文件（不按时间让锁/凭证失效）
+TURN_FRESH_S = 1800  # 保留常量（历史新鲜窗；磁盘凭证免催已取消，不再据此免催）
+STATE_FILES_MAX = 128  # 会话状态文件数量上限：只按数量收敛陈旧会话文件
 # 一次收尾锁（复核整改）：每会话独立锁文件，O_CREAT|O_EXCL 原子独占——并发 Stop 只有一个能落锁；
 # 锁不设 TTL：只有新的真实请求（mark_prompt）会删除它重新武装；无法落锁（目录不可写等）一律放行，
 # 绝不在没有锁保护的情况下 block。写回执/时刻存于**每会话独立状态文件** st_<sid>.json（temp+rename
-# 原子替换）：会话只写自己的文件，没有共享 map 的读-改-写窗口——别会话（或本会话旧请求）的旧快照
-# 写回不可能恢复/覆盖本会话凭证（复审#2 轮#3）；写回执同时记录请求起始时刻（store_req_ts），
-# 始于本轮 prompt 之前的写不归属本轮，防旧请求延迟完成污染新请求。状态失败只损失免催优化，
-# 不影响一次上限保证。
+# 原子替换）：会话只写自己的文件，没有共享 map 的读-改-写窗口（复审#2 轮#3）。复核④终案后状态
+# 文件仅作**诊断轨迹**——磁盘凭证免催已取消（turn_stored 恒 False），Stop 的防重唯一依据是 latch
+# 存在性；状态失败不影响一次上限保证。
 
 
 def _turn_dir():
@@ -259,8 +258,8 @@ def _state_load(session: str) -> dict:
 
 
 def _state_prune(keep: str) -> None:
-    """只按数量收敛陈旧会话状态文件（不按时间让锁/凭证失效）。删的是旧会话的文件，
-    丢失只损失免催优化（该会话至多多催一轮，仍受一次收尾锁约束）。"""
+    """只按数量收敛陈旧会话状态文件。删的是旧会话的文件，只损失诊断轨迹（该会话状态
+    保留本来就是尽力而为的优化，终案后不再影响 Stop 决策）。"""
     try:
         d = _turn_dir()
         if not d:
@@ -331,26 +330,23 @@ def mark_prompt(session: str):
 
 
 def mark_store(session: str, req_ts: float):
-    """本层「记：」成功回执（ok/warn + 有效 id）：记录本轮已存凭证 + 写请求起始时刻。
-    req_ts=remember 调用开始时刻：始于本轮 prompt 之后的写才归属本轮（防旧请求延迟完成污染新请求）。"""
+    """本层「记：」成功回执（ok/warn + 有效 id）：记录本轮已存时刻 + 写请求起始时刻。
+    复核④终案后仅作**诊断轨迹**（磁盘凭证免催已取消，不再影响 Stop 决策）。
+    req_ts=remember 调用开始时刻：始于本轮 prompt 之后的写才归属本轮（诊断归属）。"""
     _state_update(session, {"store_ts": time.time(), "store_req_ts": req_ts})
 
 
 def turn_stored(session: str) -> bool:
-    """本轮（同会话、prompt 之后、新鲜窗内）已有成功写回执。状态文件失效时保守返回 False。"""
-    if not session:
-        return False
-    e = _state_load(session)
-    if not isinstance(e, dict):
-        return False
-    st = e.get("store_ts")
-    pt = e.get("prompt_ts")
-    rq = e.get("store_req_ts")
-    if not isinstance(st, (int, float)) or not isinstance(pt, (int, float)):
-        return False
-    if isinstance(rq, (int, float)) and pt > rq:
-        return False  # 写请求始于更早一轮：回执不归属本轮（旧请求延迟完成不得免催新轮）
-    return st >= pt and time.time() - st < TURN_FRESH_S
+    """磁盘凭证免催已**取消**（复核④终案）：跨事件（UserPromptSubmit→Stop 是两个独立
+    hook 进程）没有可靠的「当前请求」身份可写入磁盘而不依赖任何文件操作成功——
+    unlink/写/锁任一环节的失败-恢复窗口都无法闭合（四轮复审逐个证伪：同会话 RMW 交错
+    可回滚新 prompt/generation，旧 mark_store 的读改写经「旧读暂停→新提交→旧写 replace」
+    复活旧凭证，使 Stop 误免催新轮）。免催的唯一依据回归 **latch 语义**：latch 在 Stop
+    的 nudge 时创建、由下一次真实 prompt 删除；「已催过」由 latch 存在与否判定（一次
+    收尾锁），本函数恒 False——即 Stop 永远按节流策略催存，绝不凭磁盘旧记录免催。
+    本层「记：」写回执仍然输出给模型（诚实告知已存），但不再影响 Stop 决策。
+    状态文件保留为诊断轨迹，不再影响 Stop 决策。"""
+    return False
 
 
 def readback(bin_path: str, sid: str, title: str, content: str, cfg: dict, budget_s: float):
@@ -712,11 +708,12 @@ def _last_store_detail(engine, timeout: int = LIST_T):
 def on_stop(data: dict, cfg: dict, engine) -> str:
     """Stop 存储检查：干完活的存储提示（deny+reason 续跑一轮）。
     规范防循环：续跑轮 stdin 带 stop_hook_active=true → 放行。
-    审计整改后的免催/放行契约（DM-01/DM-03/DM-04）：
+    审计整改后的免催/放行契约（DM-01/DM-03/DM-04 ＋ 复核④终案）：
       - 查库失败/超时/坏信封 → 放行（fail-open：记忆层故障不得拦主任务）
-      - 本轮已有成功写回执（同会话、prompt 之后）→ 放行
-      - 引擎侧写入晚于本轮 prompt（同会话；agent 自行 rsrs remember）→ 放行
-      - 每个真实请求至多 block 一次（stop_hook_active ＋ 本层一次收尾锁双保险）
+      - 每个真实请求至多 block 一次（stop_hook_active ＋ 本层一次收尾锁双保险）——
+        「已催过」由 latch 存在性判定（O_EXCL 创建、新真实 prompt 删除）
+      - 磁盘凭证免催已取消（复核④终案）：磁盘旧记录一律不免催（多催方向）；
+        「记：」成功回执仍诚实输出给模型，状态文件保留作诊断轨迹
       - 缺会话/轮次凭证时不免催（宁可多一轮有界收尾，不做跨轮误抑制）"""
     if data.get("stop_hook_active") is True:
         log_event(cfg, "stop", "active_skip")
@@ -748,11 +745,10 @@ def on_stop(data: dict, cfg: dict, engine) -> str:
     if not latch_claim(session):
         log_event(cfg, "stop", "once_latch_skip")
         return ""
-    if turn_stored(session):
-        log_event(cfg, "stop", "stored_turn_skip", "src=receipt")
-        return ""
-    # 复核整改：移除「全库最新写入时间晚于本轮 prompt 即免催」——引擎侧写入无法归属到
-    # 本会话/本请求（其他会话并行写入会误抑制）。免催只认可归属凭证：本层成功写回执。
+    # 复核④终案：磁盘凭证免催已取消——turn_stored 恒 False，唯一的防重依据是上面的 latch
+    #（存在性判定）。任何磁盘旧记录都不免催（多催方向）；「记：」回执仍诚实输出给模型，
+    # 状态文件保留为诊断轨迹。复核整改：全库最新写入时间同样不参与免催——引擎侧写入无法
+    # 归属到本会话/本请求（其他会话并行写入会误抑制）。
     log_event(cfg, "stop", "nudge")
     return json.dumps({"decision": "deny", "reason": STORE_NUDGE}, ensure_ascii=False)
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.12 — 2026-11-01 · 复审第四轮终案：取消磁盘凭证免催
+
+### Changed
+
+- **`turn_stored` 恒 False（复核④终案）**：跨事件（UserPromptSubmit→Stop 为两个独立 hook 进程）不存在「写磁盘即不依赖文件操作成功」的当前请求身份——同会话 `_state_update`（load→patch→rename）的读改写交错可回滚新 prompt/generation：旧 `mark_store` 读取后暂停 → 新 `mark_prompt` 提交 → 旧写 `os.replace` 落盘 → 旧凭证复活，Stop 误免催新轮。四轮复审逐个证伪各加锁/屏障方案后，按复审建议**取消该免催优化**（同已合并的 zcode/dimcode 终案）：Stop 唯一的防重依据回归 **latch 语义**（Stop nudge 时 O_EXCL 创建、下一次真实 prompt 删除——「已催过」由锁存在性判定，不依赖任何读到的旧磁盘凭证）。`on_stop` 删除 `turn_stored` 调用分支（latch_claim 后直接 nudge deny）。**「记：」成功回执仍诚实输出给模型**；状态文件（`st_<sid>.json`）保留作诊断轨迹，不再影响 Stop 决策。副作用：每请求 Stop 至多催一次（原本有凭证时免催的轮次现在会催——模型回执已说明已存，会直接结束，无额外引擎调用）。
+
+### Fixed
+
+- 测试：翻转所有依赖磁盘凭证免催的断言——「记：成功后本轮凭证免催」改为「记：成功后 Stop 仍 deny（免催已取消）」，B 会话本轮凭证只免催自己改为同向催存断言；屏障交错测试保留（状态文件隔离仍防回滚，断言恒不因磁盘凭证免催）；`stored_turn_skip` 留痕断言随分支删除。
+
 ## 0.6.11 — 2026-11-01 · 复审第二轮整改（三项 P2）
 
 ### Fixed
