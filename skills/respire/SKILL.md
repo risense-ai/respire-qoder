@@ -5,7 +5,7 @@ description: respire (rsrs) local encrypted memory playbook. Automatic per-turn 
 
 # respire · memory playbook
 
-Plugin behavior (Qoder hooks): SessionStart injects a short playbook; every UserPromptSubmit auto-recalls (the engine filters irrelevant queries itself; default is direct output, title tier limited to 5); when a prompt starts with "记：", "存：", or "remember:", the plugin stores it first as a fallback and returns a receipt — **when the receipt includes a provisional title and short id, extract a complete "subject + action + result" sentence from the facts and replace it with `rsrs retitle <short-id> --title` (hard rule; the title is the facade for recall and dedup)**; on Stop, if this turn produced new facts, the plugin nudges once to store — unless the store received a write in the last 10 minutes (any `rsrs remember`/`update`, agent-side included), in which case it stays silent; `/nomem` disables recall for the turn.
+Plugin behavior (Qoder hooks): SessionStart injects a short playbook; every UserPromptSubmit auto-recalls (the engine filters irrelevant queries itself; default is direct output, title tier limited to 5); when a prompt starts with "记：", "存：", or "remember:", the plugin stores it first as a fallback and returns a receipt — **when the receipt includes a provisional title and short id, extract a complete "subject + action + result" sentence from the facts and replace it with `rsrs retitle <short-id> --title` (hard rule; the title is the facade for recall and dedup)**; on Stop, the session latch permits at most one storage nudge until a new non-internal prompt rearms it; Stop never queries the engine or treats a previous write timestamp as an exemption, so even a successful explicit store may be followed by one nudge; `/nomem` disables recall for the turn.
 
 ## Commands
 
@@ -21,9 +21,9 @@ Plugin behavior (Qoder hooks): SessionStart injects a short playbook; every User
 ## Parsing notes (CLI envelope)
 
 - Every command with `--json` uses one envelope: `status`, `summary`, `items`, `details`, `errors`; **failures also return HTTP 200 with `status:"fail"` and `errors[]`** — check status, not the exit code
-- recall scores and entries live in `details[].score` and `details[].entry` (full id; use the first 8 chars as the short id); `items` is only the "score title" line
+- recall scores and entries live in `details[].score` and `details[].id` / `details[].title` (full id; use the first 8 chars as the short id); nested `entry` objects are the `show`/`chain` envelope (`details.entry`), not the titles tier
 - Progress goes to stderr; never mix it into JSON with `2>&1`
-- remember stores after judgement: `status:"ok"` means written (`summary.id`); `status:"pending"` plus `written:false` means a similar record was found and **nothing was written** — attach with `--parent <id>` or force with `--force`
+- remember stores after judgement: `status:"ok"` means written (`summary.id`); `status:"warn"` with a valid `summary.id` is ALSO already written (with warnings, e.g. an unresolvable parent) — never re-send it; `status:"pending"` plus `written:false` means a similar record was found and **nothing was written** — read the candidate bodies (`rsrs show <short-id>`), then prefer merge (`--merge-ids`) > attach (`--parent`) > new (`--force`)
 - The default `trivial` tier goes to the diary area, is excluded from recall and gets its title rewritten to "activity track <date>" — use `--importance important` for factual records
 
 ## Data safety (user-facing)

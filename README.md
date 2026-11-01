@@ -67,8 +67,8 @@ npm i -g rsrs-cli@latest
 | --- | --- |
 | `SessionStart` | 注入记忆使用规则（何时召回、如何写入、限制）；一次探测，三种提示：未登录附注册引导，记忆库为空（<10 条）附首日使用引导，缺语义模型附可选安装说明；配置齐全时不提示 |
 | `UserPromptSubmit` | 自动执行 `rsrs recall --titles`，只注入分数＋8 位短 id＋标题，正文由 agent 用 `rsrs show <id>` 按需读取。默认不设过滤阈值，噪音由三处控制：引擎 skip 门、limit 5、标题形式注入 |
-| prompt 以「记：」「存：」「remember:」开头 | 直接 `rsrs remember … --importance important` 写入并回执；引擎判为相似时不写入，把候选原样转述给模型决定（`--parent` 挂靠或 `--force` 直写）；回执要求模型抽「主语＋动作＋结果」事实句并 `retitle` 替换暂拟题 |
-| `Stop` | 存储检查：`decision: deny` 续跑一轮，提示把本轮新的事实、决定、约定、教训分条写入；`stop_hook_active=true` 时放行，防止循环；`store_nudge_every` 节流；近 10 分钟本库有过写入（问引擎 `list` 取最近 `updated_at`，覆盖 agent 直接 `rsrs remember`）则本轮不再提示 |
+| prompt 以「记：」「存：」「remember:」开头 | 直接 `rsrs remember … --importance important` 写入并回执，**回执按结果状态机**：`ok`/`warn`+有效 id（hex/uuid 白名单）→ **已写入**（warn 附引擎警告如 parent 未解析——不误报失败、不引导重发），随后 `show` 写后回读**全量核验**（id 相等＋标题相等＋完整正文相等才 verified；错 id/内容漂移→mismatch，回读不可用→unavailable，如实标注）；`pending` → **未写入**，转述候选（带短 id）＋引擎建议动作（改＞并＞挂＞存全量转达，先 `show` 读候选正文再决断）；超时/坏回执/缺 id/畸形 summary/未知 status → 一律**结果未知（unknown）**，回执只允许只读核实（`rsrs list`/`rsrs show`）并**明令禁止重发**（重复写风险）；仅 `fail` 是明确拒绝态，断言未接受。写入/回读/核实共享同一截止预算（`RESPITE_HOOK_BUDGET_S`，默认 20s，预留输出余量）——慢坏回执不再追加引擎调用，回执必达。回执要求模型抽「主语＋动作＋结果」事实句并 `retitle` 替换暂拟题 |
+| `Stop` | 存储检查：`decision: deny` 续跑一轮，提示把本轮新的事实、决定、约定、教训分条写入。**每个真实请求至多催一次**：`stop_hook_active=true` 放行 ＋ 本层**每会话独立原子锁**（`O_CREAT|O_EXCL` 独占创建——并发 Stop 只有一个能落锁；锁无 TTL，25 小时后仍占用，只有新真实 prompt 删除重新武装，`/nomem` 轮也算新请求；**宿主内部提示（Qoder Recap 白名单）不算新请求，不重新武装**——「真实请求→Stop 催→内部 Recap→Stop」不会二次催）双保险。**Stop 不查询引擎（零引擎调用）**。**磁盘凭证免催已取消**（终案）：跨事件（UserPromptSubmit→Stop 是两个独立 hook 进程）没有可靠的「当前请求」磁盘身份——「记：」成功回执仍诚实输出给模型，但不再影响 Stop 决策；**防重唯一依据是收尾锁的存在性**（latch 由新真实 prompt 删除重新武装），Stop 按节流策略催存、绝不凭磁盘旧记录免催（显式保存后仍可能提示一次收尾；模型后续行为未实机验收，Stop hook 自身不调用引擎）。写回执时刻存于**每会话独立状态文件 `st_<sid>.json`**（temp+rename 原子替换），仅作诊断轨迹：会话只写自己的文件，无共享 map 读改写交错。**落锁失败（状态目录不可写等）一律放行**：绝不无锁 deny——记忆层故障不得拦主任务结束。`store_nudge_every` 节流（1=每轮，0=关，N=每 N 轮） |
 | `/nomem` 前缀 | 本轮跳过召回 |
 | `$skill: 名称` 前缀 | 召回前剥除，避免技能名干扰召回查询 |
 | `skills/respire` | 按需加载的完整操作法；动作全由钩子驱动 |
@@ -99,7 +99,7 @@ cp hooks/respire.config.example.json hooks/respire.config.json
 | `store_nudge_every` | `1` | Stop 节流：1=每轮、N=每 N 轮、0=关 |
 | `log` | `true` | `hook.log` 留痕（超 256KB 清轮） |
 
-其它环境变量：`RESPIRE_BIN`（引擎路径）、`RESPITE_RSRS`（兼容旧名）、`RESPITE_LOG`、`RESPITE_NUDGE_STATE`。
+其它环境变量：`RESPIRE_BIN`（引擎路径）、`RESPITE_RSRS`（兼容旧名）、`RESPITE_LOG`、`RESPITE_NUDGE_STATE`、`RESPITE_TURN_STATE`（一次收尾锁/写凭证状态目录）、`RESPITE_HOOK_BUDGET_S`（写链共享截止预算，默认 20s）。
 
 过滤策略：默认不设阈值。噪音由三处控制：引擎 skip 门、limit 5、标题形式注入。漏掉真正相关的记录代价更高，所以宁可多显示两行标题。
 
@@ -160,3 +160,7 @@ bash tests/test_hooks.sh --store
 ## License
 
 MIT
+
+### Stop verification boundary
+
+Stop never queries the engine and can deny only once until a new non-internal UserPromptSubmit rearms its session latch. Internal `skip_prefixes` inputs do not rearm it; `/nomem` remains a real input. No undocumented request-ID field is assumed: an older host replaying UserPromptSubmit without a stable request identity is treated as another delivery. Real host event dispatch and model termination have not been independently tested.

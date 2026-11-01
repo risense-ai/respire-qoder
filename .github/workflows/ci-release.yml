@@ -40,7 +40,11 @@ jobs:
           python-version: '3.12'
       - run: python scripts/validate_plugin.py
       - run: python tests/test_credential_guard.py
+      - run: python -m unittest discover -s tests -p test_receipts.py -v
       - run: python -m unittest discover -s tests -p test_release.py -v
+      - name: Behavior suite (stubbed engine)
+        shell: bash
+        run: bash tests/test_hooks.sh
 
   package:
     needs: check
