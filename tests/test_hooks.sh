@@ -191,7 +191,7 @@ check "超时归为unknown" "$out" "含:store unknown"
 check "超时回执禁重发" "$out" "含:Do NOT resend"
 check "超时不引导手动重发remember" "$out" "不含:run rsrs remember manually"
 out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_showbad)
-check "回读不一致如实标注" "$out" "含:DIFFERENT title/content"
+check "回读不一致如实标注" "$out" "含:DIFFERENT id/title/content"
 # 坏 details 反例（复审轮#2）：show 回 ok 信封但 details 非空数组/字符串——局部降级 unavailable，
 # 绝不外抛成空输出吞掉已经成功的 Saved 回执，也不误报失败/引导重发
 out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_showarr)

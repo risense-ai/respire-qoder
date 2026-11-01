@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.13 — 2026-11-01
+
+- Reject invalid write IDs and mismatched/non-string read-back fields; preserve committed receipts without retries.
+
+
 ## 0.6.12 — 2026-11-01 · 复审第四轮终案：取消磁盘凭证免催
 
 ### Changed

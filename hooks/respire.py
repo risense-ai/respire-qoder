@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.12"
+VERSION = "0.6.13"
 
 # 超时窗（秒）：须盖住 rsrs runtime 冷启动（实测 doctor 模型加载 7s+），否则首轮静默、热后即灵
 RECALL_T = 14
@@ -350,45 +350,34 @@ def turn_stored(session: str) -> bool:
 
 
 def readback(bin_path: str, sid: str, title: str, content: str, cfg: dict, budget_s: float):
-    """写后核验（R11）：show 回读，校验条目存在且标题/正文头一致。
-    返回 verified / mismatch / unavailable；超预算直接 unavailable。"""
+    """Verify native-string identity, title and full body; bad reads never erase a write receipt."""
+    started = time.monotonic()
+    def finish(verdict):
+        log_event(cfg, "readback", verdict, "", (time.monotonic() - started) * 1000)
+        return verdict
     if budget_s < 2:
-        return "unavailable"
-    t0 = time.time()
+        return finish("unavailable")
     try:
-        r = run_rsrs(bin_path, ["show", sid, "--json"], min(SHOW_T, max(2, int(budget_s))))
+        r = run_rsrs(bin_path, ["show", sid, "--json"], min(SHOW_T, budget_s))
         doc = json.loads(r.stdout) if r.stdout else {}
-    except Exception as e:
-        log_event(cfg, "readback", "error", f"{type(e).__name__}", (time.time() - t0) * 1000)
-        return "unavailable"
-    ms = (time.time() - t0) * 1000
-    try:
         if not isinstance(doc, dict) or doc.get("status") != "ok":
-            log_event(cfg, "readback", "not_ok", str(doc.get("status") if isinstance(doc, dict) else "?"), ms)
-            return "unavailable"
+            return finish("unavailable")
         details = doc.get("details")
-        # 坏 details（非空数组/字符串等）类型防护：局部降级 unavailable，绝不外抛吞掉已成功的写回执（复审#2 轮#2）
         entry = details.get("entry") if isinstance(details, dict) else None
         if not isinstance(entry, dict):
-            log_event(cfg, "readback", "no_entry", "", ms)
-            return "unavailable"
-        summ = doc.get("summary")
-        rid = str(summ.get("id") or "") if isinstance(summ, dict) else ""
-        if rid != sid:  # 返回的是别的条目：不是本条核验通过
-            log_event(cfg, "readback", "mismatch", f"id={rid[:8]}!={sid[:8]}", ms)
-            return "mismatch"
-        et, ec = str(entry.get("title") or ""), str(entry.get("content") or "")
-        bad_title = bool(title) and et != title
-        bad_body = content.strip() != ec.strip()  # 完整正文比对（去首尾空白规范化）
-        if bad_title or bad_body:
-            log_event(cfg, "readback", "mismatch", f"title={bad_title} body={bad_body}", ms)
-            return "mismatch"
+            return finish("unavailable")
+        summary = doc.get("summary")
+        rid = summary.get("id") if isinstance(summary, dict) else None
+        eid = entry.get("id")
+        if not (isinstance(rid, str) and rid == sid and isinstance(eid, str) and eid == sid):
+            return finish("mismatch")
+        et, ec = entry.get("title"), entry.get("content")
+        if not isinstance(et, str) or not isinstance(ec, str):
+            return finish("mismatch")
+        return finish("verified" if et == title and ec.strip() == content.strip() else "mismatch")
     except Exception:
-        # 任何核验异常一律局部降级：remember 已成功（ok/warn+id），回执必须保留、禁止重发约束不变
-        log_event(cfg, "readback", "degraded", "", ms)
-        return "unavailable"
-    log_event(cfg, "readback", "verified", sid[:8], ms)
-    return "verified"
+        # remember already committed: retain Saved, never retry on a malformed read.
+        return finish("unavailable")
 
 
 def verify_recent_write(bin_path: str, t0: float, max_wait: float = 0):
@@ -446,15 +435,16 @@ def do_store(bin_path: str, content: str, cfg: dict, session: str = "") -> str:
         doc = {}
     status = str(doc.get("status") or "")
     summ = doc.get("summary")
-    sid = str(summ.get("id") or "") if isinstance(summ, dict) else ""
-    if not re.fullmatch(r"[0-9a-fA-F][0-9a-fA-F-]{7,}", sid):
-        sid = ""  # 缺失/畸形 id 一律按不可确认处理，不当有效也不当失败
+    raw_id = summ.get("id") if isinstance(summ, dict) else None
+    sid = raw_id if isinstance(raw_id, str) and re.fullmatch(
+        r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9a-f]{16,}", raw_id, re.I) else ""
 
     # —— 已写入：ok / warn（warn 也是已提交，只是带警告）——
     if parse_ok and sid and status in ("ok", "warn"):
         mark_store(session, t0)
         if status == "warn":
-            warns = [str(e) for e in (doc.get("errors") or []) if isinstance(e, (str, int, float))][:3]
+            warns = [str(e) for e in (doc.get("errors") if isinstance(doc.get("errors"), list) else [])
+                     if isinstance(e, (str, int, float))][:3]
             out = "【respire · stored】Saved with warnings"
             if warns:
                 out += " (" + "; ".join(warns)[:160] + ")"
@@ -466,9 +456,9 @@ def do_store(bin_path: str, content: str, cfg: dict, session: str = "") -> str:
         rb = readback(bin_path, sid, title, content, cfg,
                       (float(os.environ.get("RESPITE_HOOK_BUDGET_S") or 20) - 2.5) - (time.time() - t0))
         if rb == "verified":
-            out += " Write verified by read-back (entry exists; title and content match)."
+            out += " Write verified by read-back (entry exists; id, title and full content match)."
         elif rb == "mismatch":
-            out += (" Read-back shows a DIFFERENT title/content than sent — inspect rsrs show "
+            out += (" Read-back shows a DIFFERENT id/title/content than sent — inspect rsrs show "
                     f"{sid[:8]} before any retitle.")
         else:
             out += f" Read-back unavailable — if it matters, verify with rsrs show {sid[:8]}."
