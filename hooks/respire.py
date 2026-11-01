@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.9"
+VERSION = "0.6.10"
 
 # 超时窗（秒）：须盖住 rsrs runtime 冷启动（实测 doctor 模型加载 7s+），否则首轮静默、热后即灵
 RECALL_T = 14
@@ -213,102 +213,117 @@ def extract_title(content: str) -> str:
 
 
 TURN_FRESH_S = 1800  # 本轮写回执的新鲜度上限：超窗视为陈旧，不再据此免催
-LATCH_WINDOW_S = 600  # 一次收尾锁窗口：每个真实请求至多 deny 一次（stop_hook_active 之外的本层保险）
+# 一次收尾锁（复核整改）：每会话独立锁文件，O_CREAT|O_EXCL 原子独占——并发 Stop 只有一个能落锁；
+# 锁不设 TTL：只有新的真实请求（mark_prompt）会删除它重新武装；无法落锁（目录不可写等）一律放行，
+# 绝不在没有锁保护的情况下 block。写回执/时刻存于尽力维护的 per-session map（temp+rename 原子替换），
+# map 失败只损失免催优化，不影响一次上限保证。
 
 
-def _turn_path() -> str:
-    return os.environ.get("RESPITE_TURN_STATE") or os.path.join(data_dir(), ".store_turn")
-
-
-def _turn_load() -> dict:
-    """轮次状态（.store_turn）：{session, prompt_ts, store_ts, stop_block_ts}。
-    以「同会话、prompt 之后」为本轮凭证——取代旧的『近 10 分钟全局写入』跨轮抑制。"""
+def _turn_dir():
+    base = os.environ.get("RESPITE_TURN_STATE") or data_dir()
+    if base.endswith(".json") or base.endswith(".store_turn"):
+        base = os.path.dirname(base)  # 兼容旧文件路径用法：取目录
     try:
-        with open(_turn_path(), encoding="utf-8") as f:
-            d = json.load(f)
-        if isinstance(d, dict):
-            return d
+        os.makedirs(base, exist_ok=True)
+        return base
+    except Exception:
+        return None
+
+
+def _sid_key(session: str) -> str:
+    import hashlib
+    return hashlib.sha1(("respire-turn-v2:" + (session or "~")).encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _latch_path(session: str):
+    d = _turn_dir()
+    return os.path.join(d, ".latch_" + _sid_key(session)) if d else None
+
+
+def _map_path():
+    d = _turn_dir()
+    return os.path.join(d, "turn_map.json") if d else None
+
+
+def _map_load() -> dict:
+    try:
+        with open(_map_path(), encoding="utf-8") as f:
+            m = json.load(f)
+        return m if isinstance(m, dict) else {}
+    except Exception:
+        return {}
+
+
+def _map_update(session: str, patch: dict) -> bool:
+    """合并更新单会话条目（temp+rename 原子替换）；失败返回 False，绝不抛。"""
+    p = _map_path()
+    if not p or not session:
+        return False
+    try:
+        m = _map_load()
+        entry = m.get(session) if isinstance(m.get(session), dict) else {}
+        entry.update(patch)
+        m[session] = entry
+        if len(m) > 64:  # 只按数量收敛陈旧会话，不按时间让锁/凭证失效
+            for k in sorted(m, key=lambda k: float(m[k].get("prompt_ts") or 0))[:len(m) - 64]:
+                m.pop(k, None)
+        tmp = "%s.%d.tmp" % (p, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(m, f)
+        os.replace(tmp, p)
+        return True
+    except Exception:
+        return False
+
+
+def latch_claim(session: str) -> bool:
+    """原子一次收尾锁：独占创建成功=True（本次可 block）；已存在/任何失败=False（放行方向）。"""
+    p = _latch_path(session)
+    if not p:
+        return False
+    try:
+        fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, json.dumps({"ts": time.time()}).encode("utf-8"))
+        os.close(fd)
+        return True
+    except Exception:
+        return False  # FileExistsError=已催过；其余失败=无锁不 block
+
+
+def latch_rearm(session: str) -> None:
+    """新真实请求重新武装：删除本会话锁。删不掉时保持上锁（宁可少催，不重复催）。"""
+    p = _latch_path(session)
+    if not p:
+        return
+    try:
+        os.remove(p)
     except Exception:
         pass
-    return {}
-
-
-def _turn_save(entry: dict):
-    try:
-        with open(_turn_path(), "w", encoding="utf-8") as f:
-            json.dump(entry, f)
-    except Exception:
-        pass
-
-
-def _turn_num(v):
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
 def mark_prompt(session: str):
-    """真实用户请求开始：推进 prompt_ts、清一次收尾锁（新请求重新武装收尾预算）。"""
-    e = _turn_load()
-    if session and e.get("session") != session:
-        e = {"session": session}
-    e["session"] = session or e.get("session", "")
-    e["prompt_ts"] = time.time()
-    e.pop("stop_block_ts", None)
-    _turn_save(e)
+    """真实用户请求开始：尽力记录 prompt_ts；删除一次收尾锁（重新武装）。"""
+    _map_update(session, {"prompt_ts": time.time()})
+    latch_rearm(session)
 
 
 def mark_store(session: str):
-    """本层「记：」成功回执（ok/warn + 有效 id）：记录本轮已存凭证，Stop 免催。"""
-    e = _turn_load()
-    if session and e.get("session") != session:
-        e = {"session": session}
-    e["session"] = session or e.get("session", "")
-    e["store_ts"] = time.time()
-    _turn_save(e)
+    """本层「记：」成功回执（ok/warn + 有效 id）：尽力记录本轮已存凭证，Stop 免催。"""
+    _map_update(session, {"store_ts": time.time()})
 
 
 def turn_stored(session: str) -> bool:
-    """本轮（同会话、prompt 之后、新鲜窗内）已有成功写回执。"""
+    """本轮（同会话、prompt 之后、新鲜窗内）已有成功写回执。map 失效时保守返回 False。"""
     if not session:
         return False
-    e = _turn_load()
-    if e.get("session") != session:
+    e = _map_load().get(session)
+    if not isinstance(e, dict):
         return False
-    st, pt = _turn_num(e.get("store_ts")), _turn_num(e.get("prompt_ts"))
-    if st is None or pt is None:
+    st = e.get("store_ts")
+    pt = e.get("prompt_ts")
+    if not isinstance(st, (int, float)) or not isinstance(pt, (int, float)):
         return False
     return st >= pt and time.time() - st < TURN_FRESH_S
-
-
-def turn_prompt_ts(session: str):
-    """本会话最近一次真实 prompt 的时刻（引擎侧写入须晚于它才算本轮已存）。"""
-    if not session:
-        return None
-    e = _turn_load()
-    if e.get("session") != session:
-        return None
-    return _turn_num(e.get("prompt_ts"))
-
-
-def stop_latch_active(session: str) -> bool:
-    """一次收尾锁：本轮已 deny 过就不再催（防宿主未带 stop_hook_active 的重复 Stop）。"""
-    e = _turn_load()
-    bt, pt = _turn_num(e.get("stop_block_ts")), _turn_num(e.get("prompt_ts"))
-    if bt is None:
-        return False
-    if session and e.get("session") != session:
-        return False
-    if pt is not None and pt > bt:
-        return False  # deny 之后又来了新请求 → 重新武装
-    return time.time() - bt < LATCH_WINDOW_S
-
-
-def mark_stop_block(session: str):
-    e = _turn_load()
-    if session and e.get("session") != session:
-        e = {"session": session}
-    e["session"] = session or e.get("session", "")
-    e["stop_block_ts"] = time.time()
-    _turn_save(e)
 
 
 def readback(bin_path: str, sid: str, title: str, content: str, cfg: dict, budget_s: float):
@@ -331,10 +346,14 @@ def readback(bin_path: str, sid: str, title: str, content: str, cfg: dict, budge
     if not isinstance(entry, dict):
         log_event(cfg, "readback", "no_entry", "", ms)
         return "unavailable"
+    summ = doc.get("summary")
+    rid = str(summ.get("id") or "") if isinstance(summ, dict) else ""
+    if rid != sid:  # 返回的是别的条目：不是本条核验通过
+        log_event(cfg, "readback", "mismatch", f"id={rid[:8]}!={sid[:8]}", ms)
+        return "mismatch"
     et, ec = str(entry.get("title") or ""), str(entry.get("content") or "")
-    head = content.strip()[:40]
     bad_title = bool(title) and et != title
-    bad_body = bool(head) and head not in ec
+    bad_body = content.strip() != ec.strip()  # 完整正文比对（去首尾空白规范化）
     if bad_title or bad_body:
         log_event(cfg, "readback", "mismatch", f"title={bad_title} body={bad_body}", ms)
         return "mismatch"
@@ -342,10 +361,14 @@ def readback(bin_path: str, sid: str, title: str, content: str, cfg: dict, budge
     return "verified"
 
 
-def verify_recent_write(bin_path: str, t0: float):
-    """未知写结果的只读核实（R10）：list 近 3 条里是否有 t0 之后落库的条目。返回 (id, title) 或 None。"""
+def verify_recent_write(bin_path: str, t0: float, max_wait: float = 0):
+    """未知写结果的只读核实（R10）：list 近 3 条里是否有 t0 之后落库的条目。返回 (id, title) 或 None。
+    max_wait>0 时受剩余 hook 预算约束（超时上限取 min(LIST_T, max_wait)）。"""
     try:
-        d, ok = _last_store_detail(bin_path)
+        timeout = LIST_T
+        if max_wait > 0:
+            timeout = max(1, min(LIST_T, int(max_wait)))
+        d, ok = _last_store_detail(bin_path, timeout)
     except Exception:
         return None
     if not ok or not isinstance(d, dict):
@@ -392,7 +415,10 @@ def do_store(bin_path: str, content: str, cfg: dict, session: str = "") -> str:
     if not isinstance(doc, dict):
         doc = {}
     status = str(doc.get("status") or "")
-    sid = str((doc.get("summary") or {}).get("id") or "") if parse_ok else ""
+    summ = doc.get("summary")
+    sid = str(summ.get("id") or "") if isinstance(summ, dict) else ""
+    if not re.fullmatch(r"[0-9a-fA-F][0-9a-fA-F-]{7,}", sid):
+        sid = ""  # 缺失/畸形 id 一律按不可确认处理，不当有效也不当失败
 
     # —— 已写入：ok / warn（warn 也是已提交，只是带警告）——
     if parse_ok and sid and status in ("ok", "warn"):
@@ -407,7 +433,8 @@ def do_store(bin_path: str, content: str, cfg: dict, session: str = "") -> str:
         else:
             out = f"【respire · stored】Saved: {title} ({sid[:8]})."
             log_event(cfg, "store", "ok", sid[:8], ms)
-        rb = readback(bin_path, sid, title, content, cfg, 19.0 - (time.time() - t0))
+        rb = readback(bin_path, sid, title, content, cfg,
+                      (float(os.environ.get("RESPITE_HOOK_BUDGET_S") or 20) - 2.5) - (time.time() - t0))
         if rb == "verified":
             out += " Write verified by read-back (entry exists; title and content match)."
         elif rb == "mismatch":
@@ -438,19 +465,27 @@ def do_store(bin_path: str, content: str, cfg: dict, session: str = "") -> str:
                          "or add --force only if genuinely independent.")
         return "\n".join(lines)
 
-    # —— 明确拒绝（可解析但非上述状态）——
-    if parse_ok and status:
-        errs = doc.get("errors") or []
-        msg = json.dumps(errs, ensure_ascii=False)[:200] if errs else f"status={status or r.returncode}"
+    # —— 引擎按当前模式拒绝执行（skip：readonly/paused 等，未写也不是失败）——
+    if parse_ok and status == "skip":
+        log_event(cfg, "store", "skip_mode", "", ms)
+        return ("【respire · not stored】The engine skipped the operation (read-only or paused mode); "
+                "follow engine policy and never force a write.")
+    # —— 明确拒绝（白名单：仅 fail 断言未接受）——
+    if parse_ok and status == "fail":
+        errs = doc.get("errors") if isinstance(doc.get("errors"), list) else []
+        msg = json.dumps(errs, ensure_ascii=False)[:200] if errs else f"status=fail rc={r.returncode}"
         log_event(cfg, "store", "fail", msg, ms)
         return f"【respire · store failed】respire did not accept it: {msg}"
 
-    # —— 结果未知：坏信封/无输出（engine 秒回，尚有预算）→ 先只读查库 ——
+    # —— 结果未知：坏信封/无输出（engine 秒回）→ 剩余预算足够才只读查库 ——
     if r is not None:
-        try:
-            hit = verify_recent_write(bin_path, t0)
-        except Exception:
-            hit = None
+        budget_s = float(os.environ.get("RESPITE_HOOK_BUDGET_S") or 20) - 2.5 - (time.time() - t0)
+        hit = None
+        if budget_s >= 1.5:
+            try:
+                hit = verify_recent_write(bin_path, t0, budget_s)
+            except Exception:
+                hit = None
         if hit:
             hid, htitle = hit
             log_event(cfg, "store", "unknown_maybe_written", hid[:8], (time.time() - t0) * 1000)
@@ -619,8 +654,11 @@ def _last_store_detail(engine, timeout: int = LIST_T):
         return None, False
     if not isinstance(doc, dict) or doc.get("status") != "ok":
         return None, False
-    best, best_ts = None, None
-    for d in (doc.get("details") or []):
+    details = doc.get("details")
+    if not isinstance(details, list):
+        return None, False  # 坏信封（details 非数组）按查询失败处理 → 不归属
+    best, best_ts, any_ts = None, None, False
+    for d in details:
         if not isinstance(d, dict):
             continue
         ts = None
@@ -628,22 +666,13 @@ def _last_store_detail(engine, timeout: int = LIST_T):
             v = _epoch(d.get(k))
             if v is not None and (ts is None or v > ts):
                 ts = v
-        if ts is not None and (best_ts is None or ts > best_ts):
-            best, best_ts = d, ts
-    return best, True
-
-
-def engine_last_store(engine, timeout: int = LIST_T):
-    """最近一条落库时间（epoch 秒）。返回 (best|None, query_ok)。"""
-    d, ok = _last_store_detail(engine, timeout)
-    if not ok or not isinstance(d, dict):
-        return None, ok
-    ts = None
-    for k in ("updated_at", "created_at"):
-        v = _epoch(d.get(k))
-        if v is not None and (ts is None or v > ts):
-            ts = v
-    return ts, True
+        if ts is not None:
+            any_ts = True
+            if best_ts is None or ts > best_ts:
+                best, best_ts = d, ts
+    if details and not any_ts:
+        return None, False  # 非空却无可解析时间戳：schema 异常 → 查询失败
+    return best, True  # 合法空库（details:[]）：查询成功、无近期写入
 
 
 def on_stop(data: dict, cfg: dict, engine) -> str:
@@ -681,26 +710,15 @@ def on_stop(data: dict, cfg: dict, engine) -> str:
     except Exception:
         pass
     session = str(data.get("session_id") or "")
-    if stop_latch_active(session):
+    # 一次收尾锁：O_EXCL 原子独占；无法落锁（含目录不可写）一律放行——绝不无锁 block
+    if not latch_claim(session):
         log_event(cfg, "stop", "once_latch_skip")
         return ""
     if turn_stored(session):
         log_event(cfg, "stop", "stored_turn_skip", "src=receipt")
         return ""
-    try:
-        ts, ok = engine_last_store(engine)
-    except Exception:
-        ts, ok = None, False
-    if not ok:
-        log_event(cfg, "stop", "engine_query_fail_open")  # 查库故障放行，不催存
-        return ""
-    if ts is not None:
-        pts = turn_prompt_ts(session)
-        now = time.time()
-        if pts is not None and pts <= ts <= now + 5:
-            log_event(cfg, "stop", "stored_recent_skip", "src=engine")
-            return ""
-    mark_stop_block(session)
+    # 复核整改：移除「全库最新写入时间晚于本轮 prompt 即免催」——引擎侧写入无法归属到
+    # 本会话/本请求（其他会话并行写入会误抑制）。免催只认可归属凭证：本层成功写回执。
     log_event(cfg, "stop", "nudge")
     return json.dumps({"decision": "deny", "reason": STORE_NUDGE}, ensure_ascii=False)
 
@@ -711,7 +729,12 @@ def on_prompt(data: dict, cfg: dict, engine) -> str:
         log_event(cfg, "prompt", "bad_prompt", "非字符串")
         return ""
     prompt = prompt.strip()
-    if not prompt or SKIP_PREFIX.match(prompt):
+    if not prompt:
+        log_event(cfg, "prompt", "nomem_or_empty", prompt[:40])
+        return ""
+    session = str(data.get("session_id") or "")
+    mark_prompt(session)  # /nomem 只跳召回，仍是新请求（重新武装收尾锁）（T11/T18）
+    if SKIP_PREFIX.match(prompt):
         log_event(cfg, "prompt", "nomem_or_empty", prompt[:40])
         return ""
     for pat in (cfg.get("skip_prefixes") or []):   # 宿主内部提示（如 Qoder Recap）白名单：不召回不落库
@@ -722,8 +745,6 @@ def on_prompt(data: dict, cfg: dict, engine) -> str:
         # 只记原因码，不落输入摘要——redact 盖不住普通 api_key/token/secret 赋值与 Bearer 值，摘要会泄密
         log_event(cfg, "prompt", "secret_skip")
         return SECRET_SKIP
-    session = str(data.get("session_id") or "")
-    mark_prompt(session)  # 真实请求凭证：Stop 的免催/一次收尾锁都锚定到它（T11/T18）
     m = STORE_PREFIX.match(prompt)
     if m:
         rest = prompt[m.end():].strip()

@@ -8,3 +8,6 @@ __pycache__/
 .DS_Store
 release-out/
 .store_turn
+# 0.6.10 一次收尾锁/写凭证状态（data_dir 回退到脚本目录时落在 hooks/ 下）
+.latch_*
+turn_map.json

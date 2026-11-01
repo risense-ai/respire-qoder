@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.10 — 2026-11-01 · 维护者复审整改（复核#1~#5＋测试可靠性 blocker）
+
+### Fixed
+
+- **一次收尾锁重构（复核#1）**：`.store_turn` 单文件状态改为**每会话独立锁文件**（`O_CREAT|O_EXCL` 原子独占——并发 Stop 只有一个能落锁；锁无 TTL，25 小时后仍占用，只有新真实 prompt 删除重新武装，A→B→A 会话交错不丢锁）；无法落锁（状态目录不可写等）一律放行——绝不无锁 deny。prompt_ts/store_ts 存于尽力维护的 per-session map（`turn_map.json`，temp+rename 原子替换，仅按数量收敛），map 失败只损失免催优化，不影响一次上限保证。
+- **畸形回执不再误报确定未写（复核#2）**：仅 `fail` 是白名单明确拒绝态、断言未接受；`ok`/`warn` 缺有效 id（hex/uuid 白名单校验）、非 dict summary（类型防护不抛异常）、未知 status、坏信封/超时一律归 **unknown**（只读核实指引＋禁止重发，绝不输出「did not accept」）。
+- **unknown 核查共享 hook 预算（复核#3）**：remember/回读/只读核实共用同一截止时间（`RESPITE_HOOK_BUDGET_S`，默认 20s，预留 2.5s 输出余量）——慢坏回执后剩余不足直接 unknown，不再追加引擎调用，回执必能在宿主窗内输出。
+- **回读全量核验（复核#4）**：`show` 回读须 id 相等＋标题相等＋**完整正文**相等才称 verified；错 id、40 字符后内容漂移→mismatch 如实标注；非 dict details 类型防护不外抛，保留已写回执。
+- **免催凭证可归属化（复核#5）**：移除「全库最新写入时间晚于本轮 prompt 即免催」（无法归属会话，B 会话写入会误免催 A）；**Stop 不再发起任何引擎查询**；`/nomem` 仍算新请求（mark 前移重新武装收尾锁），只跳召回。
+
+### Changed
+
+- **测试可靠性 blocker 整改（CI 必跑）**：stub_engine.py 补 `#!/usr/bin/env python3` shebang（POSIX 侧 cp+chmod 直接 exec，无 shebang 在 Linux 报 Exec format error）；补 `CFG_OFFE` 定义（set -u 下未定义即整脚本中止）；`RESPITE_TURN_STATE` 全部走 `cygpath -m` 混合路径 `TURNBASE`（Windows python 解析不了 MSYS `/tmp`，锁会落到错误盘符）；PY3 探测 python3→python→py 逐个**实跑校验**（windows-latest 无 python3 shim；WindowsApps 商店占位能被 command -v 命中但一跑即退）；无 rsrs 引擎时真库分支记 SKIP、桩状态机/凭据守卫/纯函数套件照常执行；修「召回头行与条数一致」遍历字符串未分行导致的恒 BAD 断言；场景更新至新契约（引擎写入不免催、查库坏信封/死进程不影响 Stop、单次 nudge 零引擎查询、25 小时锁占用、新请求//nomem 重武装、跨会话凭证、状态目录不可写放行）。bash 75/0（真库）/69/0（CI 无引擎，SKIP 显式列出）。
+- **CI 接入**：`ci-release.yml` 三平台 check job 新增 `Behavior suite (stubbed engine)` 步骤实跑 `bash tests/test_hooks.sh`——此前 CI 只跑 validate/credential_guard/release，状态机测试从未被执行。
+- README 行为表同步（原子锁/免催可归属/不查引擎/缺 id 归 unknown/全量回读/共享预算）；`.gitignore` 增一次收尾锁与 turn map 状态文件。
+
 ## 0.6.9 — 审计整改：写结果状态机＋Stop fail-open＋请求级免催凭证（QD-01~QD-04）
 
 ### Fixed
