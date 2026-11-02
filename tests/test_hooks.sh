@@ -255,7 +255,8 @@ check "one-shot latch leaves a trail" "$(grep -q 'once_latch_skip' "$TMP/hook.lo
 reset_state
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "real question before internal recap", "session_id": "selftest"}' ok >/dev/null
 check "sequence: Stop nudges after the real request" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
-check "sequence: internal Recap is skipped with no output" "$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$RECAP_TRIGGER. Return one JSON only\", \"session_id\": \"selftest\"}" ok)" "empty"
+RECAP_OUT="$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$RECAP_TRIGGER. Return one JSON only\", \"session_id\": \"selftest\"}" ok)"
+check "sequence: internal Recap is skipped with no output" "$RECAP_OUT" "empty"
 check "sequence: Stop does not deny again after the internal Recap (not re-armed)" "$(run_stub Stop "$STOP_JSON" ok stale)" "empty"
 reset_state
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"sessA\"}" rem_ok >/dev/null
@@ -450,7 +451,7 @@ print("OK" if len(m.extract_title("\u9ed8"*200))<=70 else "BAD")')" "has:OK"
 # cannot be touched. After the final decision disk-receipt suppression is cancelled: turn_stored is
 # always False, so the assertion never depends on any disk record suppressing (bias to nudging);
 # the state file is a diagnostic trail only and the rollback guarantee no longer involves suppression.
-check "barrier interleaving: independent files are not rolled back by a stale snapshot" "$(BARRIER_DIR="$TMPBASE/barrier" ROOT_HOOK_M="$ROOTM" "$PY3" - <<'PY'
+BARRIER_OUT=$(BARRIER_DIR="$TMPBASE/barrier" ROOT_HOOK_M="$ROOTM" "$PY3" - <<'PY'
 import importlib.util, os, time
 spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK_M"], "hooks", "respire.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -485,7 +486,8 @@ m._state_update("sessA", {"store_ts": now + 1.0, "store_req_ts": now - 300.0})
 checks.append(not m.turn_stored("sessA"))
 print("OK" if all(checks) else "BAD:%r" % (checks,))
 PY
-)" "has:OK"
+)
+check "barrier interleaving: independent files are not rolled back by a stale snapshot" "$BARRIER_OUT" "has:OK"
 
 # ---- Write probe (enabled explicitly with --store; writes the real store, asserts, then forgets)
 if [ "$WITH_STORE" = 1 ] && [ "$HAVE_RSRS" = 1 ]; then

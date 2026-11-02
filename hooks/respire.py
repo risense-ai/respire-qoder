@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.15"
+VERSION = "0.6.16"
 
 # Timeout windows (seconds): must cover the rsrs runtime cold start (doctor model load measured
 # at 7s+), otherwise the first turn is silent and only later turns work.
@@ -831,6 +831,290 @@ def on_prompt(data: dict, cfg: dict, engine) -> str:
     return do_recall(engine, query, cfg)
 
 
+SHELL_TOOLS = {"bash"}
+
+
+def _shell_words(command: str) -> list:
+    """Read literal shell words without evaluating substitutions or wrappers."""
+    tokens, word = [], []
+    quote, started, dynamic, plain = "", False, False, True
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+            else:
+                word.append(char)
+        elif char == "\\":
+            plain = False
+            if i + 1 >= len(command):
+                raise ValueError("unfinished escape")
+            following = command[i + 1]
+            if not quote or following in ('"', "\\", "$", chr(96), "\n"):
+                if following != "\n":
+                    word.append(following)
+                    started = True
+                i += 1
+            else:
+                word.append(char)
+        elif quote:
+            if char == quote:
+                quote = ""
+            else:
+                dynamic |= char in ("$", chr(96))
+                word.append(char)
+        elif char in ("'", '"'):
+            quote, started, plain = char, True, False
+        elif char == "#" and not started:
+            while i + 1 < len(command) and command[i + 1] != "\n":
+                i += 1
+        elif char.isspace() or char in ";&|<>()":
+            if started:
+                tokens.append(("".join(word), dynamic, False, plain and "".join(word).isdigit() and char in "<>"))
+                word, started, dynamic, plain = [], False, False, True
+            if char == "\n" or char in ";&|<>()":
+                operator = char
+                if i + 1 < len(command) and char + command[i + 1] in ("&&", "||", ">>", "<<", ">&", "<&", "&>"):
+                    operator += command[i + 1]
+                    i += 1
+                tokens.append((operator, False, True, False))
+        else:
+            started = True
+            dynamic |= char in ("$", chr(96))
+            word.append(char)
+        i += 1
+    if quote:
+        raise ValueError("unfinished quote")
+    if started:
+        tokens.append(("".join(word), dynamic, False, False))
+    return tokens
+
+
+def _memory_subcommand(values: list, index: int) -> int:
+    while index < len(values):
+        name, separator, value = values[index].partition("=")
+        if name in ("--client-only", "--json") and not separator:
+            index += 1
+        elif name in ("--model-task-id", "--progress-id"):
+            index += 1
+            if not separator:
+                if index >= len(values) or values[index].startswith("--"):
+                    raise ValueError("missing global option value")
+                index += 1
+            elif not value:
+                raise ValueError("empty global option value")
+        else:
+            break
+    return index
+
+
+def _memory_writes(command: str) -> list:
+    segments, segment = [], []
+    for token in _shell_words(command) + [(";", False, True, False)]:
+        if token[2] and token[0] in (";", "&&", "||", "|", "&", "\n"):
+            if segment:
+                segments.append(segment)
+                segment = []
+        else:
+            segment.append(token)
+    writes = []
+    executable = re.compile(r"(?:^|[/\\])rsrs(?:\.(?:exe|cmd|ps1))?$", re.I)
+    wrapped = {"bash", "sh", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe",
+               "pwsh", "pwsh.exe", "python", "python3", "node", "env", "command", "exec",
+               "sudo", "timeout", "eval", "npx", "npx.cmd", "uv", "time", "nohup", ".", "call", "(", "{", "if", "then", "do", "while", "for", "case", "!"}
+    for segment in segments:
+        words, opaque_redirection, i = [], False, 0
+        while i < len(segment):
+            value, dynamic, operator, descriptor = segment[i]
+            if descriptor and i + 1 < len(segment) and segment[i + 1][2]:
+                i += 1
+                continue
+            if operator and value in (">", ">>", ">&", "<", "<&", "<<", "&>"):
+                if value == "<<":
+                    opaque_redirection = True
+                if i + 1 < len(segment) and not segment[i + 1][2]:
+                    opaque_redirection |= segment[i + 1][1]
+                    i += 2
+                else:
+                    opaque_redirection = True
+                    i += 1
+                continue
+            words.append(segment[i])
+            i += 1
+        segment = words
+        if not segment:
+            continue
+        values = [token[0] for token in segment]
+        first = values[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if not executable.search(values[0]):
+            joined = " ".join(values)
+            write_expression = r"\brsrs(?:\.(?:exe|cmd|ps1))?\s+(?:(?:--client-only|--json)\s+|--(?:model-task-id|progress-id)(?:=\S+|\s+\S+)\s+)*(?:remember|update|attach)\b"
+            embedded = []
+            for index, value in enumerate(values):
+                if executable.search(value):
+                    subcommand = _memory_subcommand(values, index + 1)
+                    if subcommand < len(values) and values[subcommand] in ("remember", "update", "attach"):
+                        embedded.append(index)
+            if any(token[1] for token in segment) and (
+                    re.search(r"\$\([^)]*" + write_expression, joined)
+                    or re.search(chr(96) + "[^" + chr(96) + "]*" + write_expression + "[^" + chr(96) + "]*" + chr(96), joined)):
+                raise ValueError("memory command substitution")
+            if embedded and any(token[2] and token[0] == "(" for token in segment[:embedded[-1]]):
+                raise ValueError("nested memory write")
+            if (first in wrapped or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", values[0])) and (
+                    embedded or re.search(write_expression, joined)):
+                raise ValueError("wrapped memory write")
+            if segment[0][1] and re.search(r"\brsrs\b", command, re.I) and any(
+                    value in ("remember", "update", "attach") for value in values):
+                raise ValueError("dynamic memory executable")
+            continue
+        operation = _memory_subcommand(values, 1)
+        if operation >= len(values) or values[operation] not in ("remember", "update", "attach"):
+            if operation < len(values) and values[operation].startswith("-") and any(
+                    value in ("remember", "update", "attach") for value in values[operation + 1:]):
+                raise ValueError("unsupported command prefix")
+            continue
+        if any(token[1] or token[2] for token in segment[:operation + 1]):
+            raise ValueError("dynamic memory command")
+        if opaque_redirection or any(token[1] or token[2] for token in segment[operation + 1:]):
+            raise ValueError("opaque or dynamic memory arguments")
+        args = values[operation + 1:]
+        writes.append((values[operation], args))
+    return writes
+
+
+def _write_parent(operation: str, args: list):
+    importance, parent, positional = "trivial", None, []
+    seen, i, options = set(), 0, True
+    valued = {"--importance", "--parent", "--title", "--content", "--tags", "--type",
+              "--project", "--computer", "--emotion", "--merge-ids", "--supersedes",
+              "--see-also", "--kind", "--summary", "--source-refs", "--valid-until", "--review-at", "--artifact", "--model-task-id", "--progress-id"}
+    while i < len(args):
+        argument = args[i]
+        if options and argument == "--":
+            options = False
+            i += 1
+            continue
+        if options and argument in ("--help", "-h"):
+            return None, None
+        name, separator, value = argument.partition("=")
+        if options and name in ("--force", "-f", "--clear-parent", "--no-parent"):
+            raise ValueError("placement bypass")
+        if options and name in valued:
+            if name in seen:
+                raise ValueError("duplicate option")
+            seen.add(name)
+            if not separator:
+                i += 1
+                if i >= len(args) or args[i].startswith("--"):
+                    raise ValueError("missing option value")
+                value = args[i]
+            if name == "--importance":
+                importance = value
+            elif name == "--parent":
+                parent = value
+        elif options and argument.startswith("-"):
+            if argument not in ("--json", "--client-only", "--clear-summary", "--clear-source-refs", "--clear-valid-until", "--clear-review-at", "--clear-artifact"):
+                raise ValueError("unsupported write option")
+        else:
+            positional.append(argument)
+        i += 1
+    if operation == "attach":
+        if len(positional) != 2 or parent is not None:
+            raise ValueError("ambiguous attachment")
+        parent = positional[1]
+    if importance not in ("important", "trivial", "normal"):
+        raise ValueError("unknown importance")
+    if parent is not None and (not isinstance(parent, str) or not re.fullmatch(
+            r"(?:[a-fA-F0-9]{8,64}|[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12})", parent)):
+        raise ValueError("invalid parent")
+    if operation == "remember" and (importance == "important" or "--merge-ids" in seen) and parent is None:
+        raise ValueError("missing parent")
+    target = None
+    if operation == "update" and importance == "important":
+        if len(positional) != 1 or not re.fullmatch(
+                r"(?:[a-fA-F0-9]{8,64}|[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12})", positional[0]):
+            raise ValueError("invalid promotion target")
+        target = positional[0]
+    return parent, target
+
+
+def _guard_deny(reason: str) -> dict:
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+            "permissionDecision": "deny", "permissionDecisionReason": reason}}
+
+
+def _show_guard_entry(engine, identifier: str, deadline: float) -> dict:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ValueError("parent verification budget exhausted")
+    result = run_rsrs(engine, ["--client-only", "show", identifier, "--json"], min(SHOW_T, remaining))
+    doc = json.loads(result.stdout)
+    details = doc.get("details") if isinstance(doc, dict) else None
+    entry = details.get("entry") if isinstance(details, dict) else None
+    actual_id = entry.get("id") if isinstance(entry, dict) else None
+    summary = doc.get("summary") if isinstance(doc, dict) else None
+    if not (result.returncode == 0 and doc.get("status") == "ok"
+            and isinstance(actual_id, str) and isinstance(summary, dict)
+            and summary.get("id") == actual_id
+            and re.fullmatch(r"(?:[a-fA-F0-9]{16,64}|[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12})", actual_id)
+            and actual_id.lower().startswith(identifier.lower())):
+        raise ValueError("memory entry not verified")
+    return entry
+
+
+def on_pre_tool_use(data: dict):
+    name = str(data.get("tool_name") or "").lower()
+    tool_input = data.get("tool_input")
+    if name not in SHELL_TOOLS and not re.fullmatch(r"(?:mcp__.*__)?memory_(?:remember|update|attach)", name):
+        return ""
+    if name not in SHELL_TOOLS:
+        return _guard_deny("Respire blocked this MCP memory write because its target profile cannot be bound to the local parent reader. You MUST use one explicit literal rsrs command through the guarded shell. DO NOT bypass placement with force or guess a parent. Keep placement pending until the target and parent can be verified; confirm completion only from a valid write receipt and read-back. Read-only, paused and disabled policies remain exceptions to storing.")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    identified = False
+    try:
+        if not isinstance(command, str):
+            return ""
+        identified = bool(re.search(r"\brsrs(?:\.(?:exe|cmd|ps1))?\b", command, re.I)
+                          and re.search(r"\b(?:remember|update|attach)\b", command))
+        try:
+            writes = _memory_writes(command)
+        except ValueError as error:
+            identified |= str(error) not in ("unfinished escape", "unfinished quote")
+            if identified:
+                raise
+            return ""
+        identified = bool(writes)
+        if not writes:
+            return ""
+        requirements = [_write_parent(operation, args) for operation, args in writes]
+        parents = {parent for parent, _ in requirements if parent is not None}
+        targets = {target for _, target in requirements if target is not None}
+        if not parents and not targets:
+            return ""
+        deadline = time.monotonic() + 16.0
+        engine = find_rsrs(load_config())
+        if not engine:
+            raise ValueError("parent reader unavailable")
+        for target in targets:
+            entry = _show_guard_entry(engine, target, deadline)
+            parent = entry.get("parent_id")
+            if not isinstance(parent, str) or not re.fullmatch(
+                    r"(?:[a-fA-F0-9]{8,64}|[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12})", parent):
+                raise ValueError("promotion needs an existing parent; attach before update")
+            if parent.lower() == entry["id"].lower():
+                raise ValueError("invalid self parent")
+            parents.add(parent)
+        for parent in parents:
+            _show_guard_entry(engine, parent, deadline)
+        return ""
+    except Exception:
+        if identified:
+            return _guard_deny("Respire blocked this memory write. You MUST use one explicit literal command. DO NOT use --force or clear a parent. Important creation and every merge require an explicit --parent ID verified by read-only show. Before promoting an update to important, the existing target must have a valid, verified parent; otherwise attach it first. Read rsrs prompt and candidate bodies; prefer update > merge > attach > new. If placement cannot be verified, keep it pending and explain. Confirm completion only from a valid receipt and read-back. Read-only, paused and disabled policies remain exceptions to storing.")
+        return ""
+
+
 def main() -> None:
     try:
         event = (sys.argv[1] if len(sys.argv) > 1 else "") or os.environ.get("QODER_HOOK_EVENT", "") or os.environ.get("DIM_HOOK_EVENT", "")
@@ -853,6 +1137,12 @@ def main() -> None:
             event = str(data.get("hook_event_name") or "")
     except Exception:
         data, event = {}, ""
+
+    if event == "PreToolUse":
+        out = on_pre_tool_use(data)
+        if out:
+            print(json.dumps(out, ensure_ascii=True))
+        sys.exit(0)
 
     try:
         cfg = load_config()
