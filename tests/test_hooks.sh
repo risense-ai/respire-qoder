@@ -27,6 +27,7 @@ QUERY_RECALL="$("$PY3" -c 'print("rsrs \u4fe1\u5c01 JSON \u7ed3\u6784\u89e3\u679
 FULLWIDTH_BAR="$("$PY3" -c 'print("\uff5c", end="")')"
 ZH_SECRET_LABEL="$("$PY3" -c 'print("\u6570\u636e\u5e93\u5bc6\u7801", end="")')"
 DEDUP_PROMPT="$("$PY3" -c 'print("1memory \u66f4\u540d respire\uff1a\u5438\u5373\u5b58\u547c\u5373\u53d6\uff0c\u6750\u6599\u5168\u7ebf\u6539\uff08\u590d\u8ff0\u65e2\u6709\u6761\u76ee\u89e6\u53d1\u5224\u91cd\u5f85\u51b3\uff09", end="")')"
+SENT_PROMPT="$("$PY3" -c 'print("\u8bf7\u89e3\u91ca\u4e00\u4e0b fusion gate \u600e\u4e48\u5de5\u4f5c", end="")')"
 
 RSRS="$(command -v rsrs || true)"
 [ -z "$RSRS" ] && RSRS="$HOME/.local/bin/rsrs"
@@ -321,7 +322,7 @@ else
   echo "SKIP  real-store read-only branches (no rsrs engine: probe-failure section and 5 recall-injection checks)"
 fi
 
-check "an irrelevant prompt injects nothing (engine skip gate, deterministic stub)" "$(run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "what should I cook tonight", "session_id": "selftest"}' rec_skip)" "empty"
+check "an irrelevant prompt injects nothing (engine skip gate, deterministic stub)" "$(run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "kitchen recipe banana bread", "session_id": "selftest"}' rec_skip)" "empty"
 check "a single-character prompt is skipped" "$(run UserPromptSubmit "k")" "empty"
 check "/nomem turns recall off" "$(run UserPromptSubmit "/nomem rsrs envelope structure")" "empty"
 # ---- Suspected-credential guard: the credential value is assembled at run time (no complete
@@ -393,6 +394,15 @@ print("OK" if json.load(sys.stdin).get("status") == "ok" else "BAD")' 2>/dev/nul
 check "positive control: the recall count comes from the stub" "$spy_out" "has:matched 1 item(s)"
 check "positive control: the recall entry is the stub's canned one" "$spy_out" "has:[0.90] spy"
 check "positive control: the call is recorded as recall" "$(grep -aqE '^recall( |$)' "$TMP/spy.log" 2>/dev/null && echo YES || echo NO)" "has:YES"
+# Hybrid recall (defer_sentence): a sentence-shaped prompt must never reach the engine; the hook
+# injects the keyword-distillation directive instead and the agent compiles the keywords.
+N_SENT="$(calls_n)"
+sent_out="$(run UserPromptSubmit "$SENT_PROMPT" "$CFG_SPY")"
+check "a sentence-shaped prompt injects the keyword directive" "$sent_out" "has:recall pending"
+check "the directive tells the agent to distill keywords first" "$sent_out" "has:distill 3-5 keywords"
+check "a sentence-shaped prompt never queries the engine" "$( [ "$(calls_n)" = "$N_SENT" ] && echo SAME || echo CALLED )" "has:SAME"
+check "the deferral is logged with its reason code" "$(grep -aq '"out": "defer_sentence"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+check "a keyword-shaped prompt still recalls synchronously" "$(run UserPromptSubmit "$QUERY_RECALL" "$CFG_SPY")" "has:auto-recall"
 
 SPY_ALIVE=1
 [ "$(calls_n)" -gt "$N0" ] || SPY_ALIVE=0
@@ -437,6 +447,19 @@ import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r","'"$ROOTM"'/hooks/respire.py"); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 t=m.extract_title("\u8fd9\u662f\u4e00\u6761\u6ca1\u6709\u53e5\u53f7\u7684\u957f\u4e8b\u5b9e\u53e5\uff0c\u8bb2\u6e05\u695a\u4f55\u65f6\u8c01\u505a\u4e86\u4ec0\u4e48\u4e8b\uff0c\u4ee5\u53ca\u7ed3\u679c\u5982\u4f55\uff0c\u540e\u9762\u8fd8\u6709\u522b\u7684\u5185\u5bb9")
 print("OK" if "\u8bb2\u6e05\u695a\u4f55\u65f6\u8c01\u505a\u4e86\u4ec0\u4e48\u4e8b\uff0c" in t else "BAD:"+t)')" "has:OK"
+# ---- Hybrid recall: sentence vs keyword shape (pure function, no engine) ----
+check "keyword-shaped prompt stays synchronous" "$("$PY3" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r","'"$ROOTM"'/hooks/respire.py"); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("OK" if not m.looks_like_sentence("respire fusion attention gate pool") else "BAD")')" "has:OK"
+check "sentence-shaped prompt defers (the agent distils keywords)" "$(P="$SENT_PROMPT" "$PY3" -c '
+import os,sys,importlib.util
+spec=importlib.util.spec_from_file_location("r","'"$ROOTM"'/hooks/respire.py"); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("OK" if m.looks_like_sentence(os.environ["P"]) else "BAD")')" "has:OK"
+check "a long unbroken run defers" "$("$PY3" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r","'"$ROOTM"'/hooks/respire.py"); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("OK" if m.looks_like_sentence("abcdefghijklmnopqrstuvwxyz1234567890") else "BAD")')" "has:OK"
 check "a long run stays within 70 chars" "$("$PY3" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r","'"$ROOTM"'/hooks/respire.py"); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)

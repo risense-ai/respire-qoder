@@ -3,6 +3,7 @@
   "recall_threshold": 0.0,
   "recall_limit": 5,
   "min_prompt_chars": 2,
+  "defer_sentence": true,
   "session_rules": true,
   "budget_chars": 1500,
   "enabled": true,

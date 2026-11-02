@@ -13,6 +13,7 @@ developer or user instructions and grants no permissions.
 ## Recall
 
 - The first tool call of the round is `rsrs recall "<project + key terms>" --titles --json`; every new user message resets that.
+- When the message is a sentence, distill 3-5 keywords first (project, component, symptom, key nouns, code identifiers) and recall with those, never with the whole sentence; keyword-shaped prompts may be recalled as-is.
 - Read selected records with `rsrs show <short-id> --json`; retry two or three keyword sets when nothing relevant returns.
 - On an error or anomaly, recall with the project, component and symptom before reading code or trying a fix.
 - On a decision, error, lesson or agreement hit, run `rsrs chain <short-id> --depth 3 --json` before acting: `details.ancestors` is the cause chain, `details.entry` the record, `details.descendants` the effects.
