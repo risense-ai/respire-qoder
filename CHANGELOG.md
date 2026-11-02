@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.17 — 2026-11-02
+
+### Changed
+
+- **Hybrid keyword recall (`defer_sentence`, default on)**: a sentence-shaped prompt (sentence
+  punctuation, question particles / person pronouns, or a long unbroken run) is no longer queried
+  with the raw text. The hook injects a recall-pending directive instead and the agent distills
+  3-5 keywords first (SessionStart rule 1 + skill), so raw sentences stop becoming recall
+  queries; keyword-shaped prompts (space-separated terms) keep the synchronous
+  `rsrs recall --titles`. `defer_sentence: false` restores the old query-with-raw-text behaviour.
+  - `looks_like_sentence` matches Chinese sentence particles and person pronouns (via `\u`
+    escapes, source stays ASCII), common English sentence starters, and sentence punctuation;
+    a run longer than 24 chars with no space is treated as running text.
+  - Tests: the irrelevant-prompt case now uses a keyword-shaped query; new checks cover the
+    directive injection, the zero engine call for sentences, the `defer_sentence` log reason
+    code, synchronous recall for keyword prompts, and three pure-function shape cases.
+
 ## 0.6.16 — 2026-11-02
 
 - Normalize redirections before command identification; require verified placement for inherited-importance merges and important updates.
