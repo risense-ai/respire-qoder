@@ -451,7 +451,7 @@ print("OK" if len(m.extract_title("\u9ed8"*200))<=70 else "BAD")')" "has:OK"
 # cannot be touched. After the final decision disk-receipt suppression is cancelled: turn_stored is
 # always False, so the assertion never depends on any disk record suppressing (bias to nudging);
 # the state file is a diagnostic trail only and the rollback guarantee no longer involves suppression.
-check "barrier interleaving: independent files are not rolled back by a stale snapshot" "$(BARRIER_DIR="$TMPBASE/barrier" ROOT_HOOK_M="$ROOTM" "$PY3" - <<'PY'
+BARRIER_OUT=$(BARRIER_DIR="$TMPBASE/barrier" ROOT_HOOK_M="$ROOTM" "$PY3" - <<'PY'
 import importlib.util, os, time
 spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK_M"], "hooks", "respire.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -486,7 +486,8 @@ m._state_update("sessA", {"store_ts": now + 1.0, "store_req_ts": now - 300.0})
 checks.append(not m.turn_stored("sessA"))
 print("OK" if all(checks) else "BAD:%r" % (checks,))
 PY
-)" "has:OK"
+)
+check "barrier interleaving: independent files are not rolled back by a stale snapshot" "$BARRIER_OUT" "has:OK"
 
 # ---- Write probe (enabled explicitly with --store; writes the real store, asserts, then forgets)
 if [ "$WITH_STORE" = 1 ] && [ "$HAVE_RSRS" = 1 ]; then
