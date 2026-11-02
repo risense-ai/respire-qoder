@@ -163,6 +163,8 @@ MIT
 
 ### PreToolUse write guard
 
+Real shell redirections are removed before identifying the executable and subcommand; quoted text stays an argument. Every `remember --merge-ids` requires an explicit verified parent, including trivial merges because source importance can be inherited. Before `update --importance important`, the hook reads the target and verifies its existing non-empty parent; attach a root record before promoting it.
+
 Before visible Bash calls, the hook parses literal rsrs remember/update/attach arguments and every command in a sequence. It rejects force bypasses, important creation without a parent, explicit empty or invalid parents, and identified dynamic or wrapped memory writes. Use one explicit literal command when parsing is refused. Non-memory commands and read-only calls remain silent.
 
 A non-empty parent must be an ID that an existing runner can verify with `rsrs --client-only show <id> --json`. Verification has a 16-second total budget inside the 20-second hook timeout; missing runners, errors, malformed receipts and timeouts deny the write and leave placement pending. No runtime is started and the hook never writes memory. Denials contain only static English guidance and exit 0, so the Python fallback cannot swallow them. Automatic guidance still honors the enabled switch; this placement guard remains active while the hook component is installed.

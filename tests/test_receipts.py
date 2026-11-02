@@ -112,6 +112,14 @@ class ReceiptFlow(unittest.TestCase):
             "rsrs remember body --importance important --parent ''",
             "rsrs remember body --importance important --parent missing",
             "rsrs remember body --force",
+            "rsrs >out.log remember body --importance important --force",
+            "2>/dev/null rsrs remember body --importance important --force",
+            "rsrs 2>&1 remember body --importance important",
+            "rsrs --json >out.log remember body --importance important",
+            "rsrs remember body --importance >out.log important",
+            "rsrs &>out.log remember body --importance important --force",
+            "rsrs remember body --merge-ids 12345678 --importance trivial",
+            "rsrs remember body --merge-ids=12345678",
             "echo ok && rsrs remember body --importance important",
             "rsrs remember body --importance important --parent " + parent + "; rsrs remember bad --force",
             "bash -c 'rsrs remember body --importance important'",
@@ -144,6 +152,11 @@ class ReceiptFlow(unittest.TestCase):
                             "npx rsrs recall remember --titles --json",
                             "echo $(rsrs recall remember --titles --json)",
                             "echo `date` rsrs remember",
+                            "rsrs >out.log recall remember --titles --json",
+                            "2>/dev/null rsrs show remember --json",
+                            "echo '>out.log rsrs remember body --force'",
+                            "rsrs remember '2'>out.log",
+                            "rsrs remember 'body >out --parent fake'",
                             "rsrs update id --content 'body --parent fake'",
                             "rsrs remember 'body --force --parent fake'", "printf ok"):
                 with self.subTest(command=command):
@@ -159,6 +172,32 @@ class ReceiptFlow(unittest.TestCase):
                 self.assertEqual(check("rsrs --client-only --json --model-task-id fixture --progress-id=fixture remember body --importance important --parent " + parent
                                        + " --project demo --tags a,b --type context --summary summary --emotion -1"
                                        + " --source-refs '[]' --review-at 2026-12-01T00:00:00Z --artifact '{}'"), "")
+            with patch.dict(guard.__globals__, run_rsrs=lambda *args: result):
+                for prefix in ("rsrs >out.log ", "2>/dev/null rsrs ", "rsrs 2>&1 ", "rsrs &>out.log "):
+                    self.assertEqual(check(prefix + "remember 'body >out --force' --importance important --parent " + parent), "")
+                self.assertEqual(check("rsrs remember body --merge-ids 12345678 --importance trivial --parent " + parent), "")
+            target = "abcdefabcdefabcdefabcdefabcdefab"
+            promotion = "rsrs update " + target + " --importance important"
+            target_result = SimpleNamespace(returncode=0, stdout=json.dumps({
+                "status": "ok", "summary": {"id": target},
+                "details": {"entry": {"id": target, "parent_id": parent}}}))
+            promotion_calls = []
+            def promotion_show(engine, args, timeout):
+                promotion_calls.append(args)
+                return target_result if args[2] == target else result
+            with patch.dict(guard.__globals__, run_rsrs=promotion_show):
+                self.assertEqual(check(promotion), "")
+            self.assertEqual(promotion_calls, [["--client-only", "show", target, "--json"],
+                                              ["--client-only", "show", parent, "--json"]])
+            for inherited in ("", None, "missing"):
+                target_result.stdout = json.dumps({"status": "ok", "summary": {"id": target},
+                                                  "details": {"entry": {"id": target, "parent_id": inherited}}})
+                with patch.dict(guard.__globals__, run_rsrs=promotion_show):
+                    self.assertEqual(check(promotion)["hookSpecificOutput"]["permissionDecision"], "deny")
+            target_result.stdout = json.dumps({"status": "ok", "summary": {"id": target},
+                                              "details": {"entry": {"id": target, "parent_id": parent}}})
+            with patch.dict(guard.__globals__, run_rsrs=lambda engine, args, timeout: target_result if args[2] == target else SimpleNamespace(returncode=1, stdout="{}")):
+                self.assertEqual(check(promotion)["hookSpecificOutput"]["permissionDecision"], "deny")
             calls = []
             def read_only(engine, args, timeout):
                 calls.append(args)

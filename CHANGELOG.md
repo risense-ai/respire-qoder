@@ -2,6 +2,8 @@
 
 ## 0.6.16 — 2026-11-02
 
+- Normalize redirections before command identification; require verified placement for inherited-importance merges and important updates.
+
 - Add PreToolUse JSON denial for important writes without a verified parent, force bypasses, explicit parent clearing and opaque memory commands.
 - Verify literal parents with client-only show, preserve unrelated tools and document the interception boundary.
 
