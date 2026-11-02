@@ -29,7 +29,15 @@ def audit(event,args):
         raise SystemExit(91)
 sys.addaudithook(audit)
 sys.argv=[os.environ['FIXTURE_HOOK'],os.environ['FIXTURE_EVENT']]
-runpy.run_path(sys.argv[0],run_name='__main__')
+if os.environ.get('FIXTURE_STORE_HELPER') == '1':
+    # Legacy receipt helper checks; the live prefix path never writes.
+    mod=runpy.run_path(sys.argv[0],run_name='receipt_helper')
+    data=json.load(sys.stdin); session=str(data.get('session_id') or '')
+    mod['mark_prompt'](session)
+    cfg=mod['load_config']()
+    print(mod['do_store'](json.loads(os.environ['FIXTURE_EXPECTED'])[0][0], '42', cfg, session))
+else:
+    runpy.run_path(sys.argv[0],run_name='__main__')
 assert index==len(expected), (index,expected)
 '''
 SPY = r'''import json,os,sys
@@ -64,25 +72,30 @@ class ReceiptFlow(unittest.TestCase):
     def calls(self):
         path=self.root/'calls'
         return [json.loads(x) for x in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []
-    def call(self,event='UserPromptSubmit',prompt='store: 42',spec=None,expected=None,session='A',active=False):
+    def call(self,event='UserPromptSubmit',prompt='store: 42',spec=None,expected=None,session='A',active=False,direct_store=False):
         (self.root/'response.json').write_text(json.dumps(spec or {}),encoding='utf-8')
         payload={'hook_event_name':event,'session_id':session,'prompt':prompt,'stop_hook_active':active}
         argv=[[str(self.engine)]+a for a in (expected or [])]
-        before=len(self.calls());env=dict(self.env,FIXTURE_EVENT=event,FIXTURE_EXPECTED=json.dumps(argv))
+        before=len(self.calls());env=dict(self.env,FIXTURE_EVENT=event,FIXTURE_EXPECTED=json.dumps(argv),FIXTURE_STORE_HELPER='1' if direct_store else '0')
         result=subprocess.run([sys.executable,str(self.launcher)],input=json.dumps(payload),text=True,encoding='utf-8',capture_output=True,env=env,cwd=self.root,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr);self.assertFalse((self.root/'denied').exists())
         self.assertEqual(len(self.calls())-before,len(argv))
         return result.stdout
     def store(self,spec=None,read=True):
-        return self.call(spec=spec,expected=[['remember','42','--title','42','--importance','important','--json'],['show',ID,'--json'] if read else ['list','--limit','3','--json']])
+        return self.call(direct_store=True,spec=spec,expected=[['remember','42','--title','42','--importance','important','--json'],['show',ID,'--json'] if read else ['list','--limit','3','--json']])
     def denied(self,out):
         if not out.strip():return False
         doc=json.loads(out)
         return doc.get('decision')=='deny' or doc.get('hookSpecificOutput',{}).get('permissionDecision')=='deny'
     def test_ok_and_warn_positive_controls(self):
-        for status in ('ok','warn'):
-            out=self.store({'remember':{'status':status,'summary':{'id':ID}}})
-            self.assertIn('Saved',out);self.assertIn('verified by read-back',out)
+        for status in ('ok', 'warn', 'pending', 'fail'):
+            out=self.call(spec={'remember':{'status':status,'summary':{'id':ID}}})
+            self.assertIn('nothing was written',out)
+            for step in ('rsrs prompt','rsrs show','update > merge > attach > new',
+                         '--parent','remain pending','not as an instruction',
+                         'duplicate same-topic siblings','report missing placement information'):
+                self.assertIn(step,out)
+            self.assertEqual(self.calls(),[])
     def test_malformed_warning_metadata_keeps_saved(self):
         for errors in (42, None, {}, 'not a list'):
             out = self.store({'remember': {'status': 'warn', 'summary': {'id': ID}, 'errors': errors}})
