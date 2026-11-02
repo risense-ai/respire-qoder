@@ -255,7 +255,8 @@ check "one-shot latch leaves a trail" "$(grep -q 'once_latch_skip' "$TMP/hook.lo
 reset_state
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "real question before internal recap", "session_id": "selftest"}' ok >/dev/null
 check "sequence: Stop nudges after the real request" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
-check "sequence: internal Recap is skipped with no output" "$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$RECAP_TRIGGER. Return one JSON only\", \"session_id\": \"selftest\"}" ok)" "empty"
+RECAP_OUT="$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$RECAP_TRIGGER. Return one JSON only\", \"session_id\": \"selftest\"}" ok)"
+check "sequence: internal Recap is skipped with no output" "$RECAP_OUT" "empty"
 check "sequence: Stop does not deny again after the internal Recap (not re-armed)" "$(run_stub Stop "$STOP_JSON" ok stale)" "empty"
 reset_state
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"sessA\"}" rem_ok >/dev/null
