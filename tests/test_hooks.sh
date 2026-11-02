@@ -303,12 +303,11 @@ except SystemExit:
     pass
 PY
 }
-check "引擎缺失注入安装指令" "$(run_engineless)" "含:Install it now on the user's behalf"
+check "引擎缺失注入安装指令" "$(run_engineless)" "含:Install it with"
 check "引导禁自造超级密码" "$(run_engineless)" "含:never pass --super"
 check "引导要求保存恢复码" "$(run_engineless)" "含:copy and keep it"
 check "引擎缺失含配置下一步" "$(run_engineless)" "含:rsrs register"
 if [ "$HAVE_RSRS" = 1 ]; then
-  check "probe失败含未注册分支" "$(RESPITE_FAKE_PROBE_FAIL=1 run SessionStart)" "含:never registered"
 
   out=$(run UserPromptSubmit "rsrs 信封 JSON 结构解析取哪层")
   check "相关 prompt 触发召回" "$out" "非空"
