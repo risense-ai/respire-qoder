@@ -181,48 +181,18 @@ run_stub() {
 STOP_JSON='{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "selftest"}'
 reset_state() { rm -rf "$TMP/turnstate" "$TMP/nudge"; }
 
-# ---- Write receipt state machine (7.1/7.2 contract; fully stubbed, no real-store dependency) ----
+# ---- Explicit prefixes stay pending; legacy receipt helper coverage is in test_receipts.py. ----
 FACT="fixed stub fact sentence one."
 reset_state
-out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" rem_ok)
-check "ok write receipt includes short id" "$out" "has:(dddddddd)"
-check "ok write is verified by read-back" "$out" "has:verified by read-back"
-check "ok receipt tells the AI to extract a fact sentence and retitle" "$out" "has:rsrs retitle dddddddd"
-out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" rem_warn)
-check "warn is written, not misreported as failure" "$out" "has:Saved with warnings"
-check "warn receipt attaches the engine warning summary" "$out" "has:parent (cause) cannot be resolved"
-check "warn does not prompt a resend" "$out" "hasnt:did not accept"
-check "warn still offers the retitle entry point" "$out" "has:retitle eeeeeeee"
-out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" rem_pend)
-check "pending states it was not written" "$out" "has:nothing was written"
-check "pending restates candidates with short id" "$out" "has:[aaaabbbb]"
-check "pending keeps the merge suggestion" "$out" "has:--merge-ids"
-check "pending keeps the force suggestion" "$out" "has:--force"
-out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" rem_silent stale)
-check "bad receipt becomes unknown" "$out" "has:store unknown"
-check "unknown points to read-only verification" "$out" "has:rsrs list --limit 3"
-check "unknown forbids a resend" "$out" "has:Do NOT resend"
-check "unknown is not misreported as failure" "$out" "hasnt:did not accept"
-out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" rem_silent fresh)
-check "unknown plus a new entry reports a possible write" "$out" "has:may already be written"
-check "unknown plus a new entry gives the read-only id" "$out" "has:rsrs show ffffffff"
-out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" rem_slow)
-check "timeout becomes unknown" "$out" "has:store unknown"
-check "timeout receipt forbids a resend" "$out" "has:Do NOT resend"
-check "timeout does not ask for a manual remember" "$out" "hasnt:run rsrs remember manually"
-out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" rem_showbad)
-check "read-back mismatch is labelled honestly" "$out" "has:DIFFERENT id/title/content"
-# Bad-details counterexamples (review round #2): show returns an ok envelope with non-empty
-# array/string details -- degrade locally to unavailable, never throw into an empty output that
-# swallows the already successful Saved receipt, and never misreport a failure or prompt a resend.
-out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" rem_showarr)
-check "array details keep the Saved receipt" "$out" "has:Saved:"
-check "array details degrade read-back to unavailable" "$out" "has:Read-back unavailable"
-check "array details are not misreported as failure" "$out" "hasnt:did not accept"
-out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" rem_showstr)
-check "string details keep the Saved receipt" "$out" "has:Saved:"
-check "string details degrade read-back to unavailable" "$out" "has:Read-back unavailable"
-check "string details are not misreported as failure" "$out" "hasnt:did not accept"
+for mode in rem_ok rem_warn rem_pend rem_silent rem_slow rem_showbad rem_show_badarr rem_show_strdet; do
+  out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" "$mode")
+  check "prefix pending ($mode)" "$out" "has:store pending"
+  check "prefix not written ($mode)" "$out" "has:nothing was written"
+  check "prefix policy ($mode)" "$out" "has:rsrs prompt"
+  check "prefix candidate bodies ($mode)" "$out" "has:rsrs show"
+  check "prefix placement order ($mode)" "$out" "has:update > merge > attach > new"
+  check "prefix parent required ($mode)" "$out" "has:remain pending"
+done
 
 # ---- Stop store check (new contract: fail-open + request-level receipt + one-shot latch; each
 # ---- scenario gets a fresh state)
