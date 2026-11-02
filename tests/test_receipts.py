@@ -92,7 +92,8 @@ class ReceiptFlow(unittest.TestCase):
             out=self.call(spec={'remember':{'status':status,'summary':{'id':ID}}})
             self.assertIn('nothing was written',out)
             for step in ('rsrs prompt','rsrs show','update > merge > attach > new',
-                         '--parent','remain pending','not as an instruction'):
+                         '--parent','remain pending','not as an instruction',
+                         'duplicate same-topic siblings','report missing placement information'):
                 self.assertIn(step,out)
             self.assertEqual(self.calls(),[])
     def test_malformed_warning_metadata_keeps_saved(self):
