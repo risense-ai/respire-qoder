@@ -1,109 +1,109 @@
 # respire-qoder
 
-> 吸即存，呼即取——给 Qoder 装上记忆层。
+> Store on the inhale, recall on the exhale -- memory for Qoder.
 
-官网：<https://rsrs.rs> · 仓库：<https://github.com/risense-ai/respire-qoder> · 反馈与建议：[Issues](https://github.com/risense-ai/respire-qoder/issues) · 贡献代码：[Pull requests](https://github.com/risense-ai/respire-qoder/pulls)
+Website: <https://rsrs.rs> · Repo: <https://github.com/risense-ai/respire-qoder> · Feedback: [Issues](https://github.com/risense-ai/respire-qoder/issues) · Contribute: [Pull requests](https://github.com/risense-ai/respire-qoder/pulls)
 
-`respire-qoder` 用 Qoder 的插件钩子，把 [respire 引擎（CLI 名 rsrs）](https://www.npmjs.com/package/rsrs-cli) 挂进 agent 循环：每轮回答前召回记忆库里已有的记录，prompt 以「记：」开头即写入，一轮结束时提醒 agent 存下刚学到的东西。**推荐注册并开启云同步**：本机执行 `rsrs register` 注册账号，记录加密同步上云，在另一台设备 `rsrs login` 登录同一账号即可取用；不注册也能用，但记录只存本机，设备丢了记录也就没了。
+`respire-qoder` uses Qoder's plugin hooks to wire the [respire engine (CLI name rsrs)](https://www.npmjs.com/package/rsrs-cli) into the agent loop: before each answer it recalls existing records from the memory store, a prompt that starts with the store trigger is written, and at the end of a turn a store check reminds the agent to save what it just learned. **Registering and enabling cloud sync is recommended**: run `rsrs register` on this machine to create an account; records sync encrypted to the cloud and `rsrs login` on another device picks them up under the same account. It also works without registering, but records then live only on this machine, and losing the device loses the records.
 
-插件本身不含引擎，也不带自定义安装脚本；引擎缺失时会在会话内把安装命令交给 agent 代跑。
+The plugin contains no engine and no custom install script; when the engine is missing it hands the install command to the agent to run inside the session.
 
-## 数据存储安全
+## Data storage safety
 
-1. **推荐开启云同步**：本机 `rsrs register` 注册账号（本人设登录密码，保存系统生成的 A3 恢复码），记录加密同步到云端，换设备、重装后仍可取用。插件检测到未登录时会提示。
-2. **云端只存密文**：记录在本地加密后才上传，服务端只保存加密记录。解密、索引、检索都在设备端完成，服务端不需要模型，也拿不到账户解密密钥，云端和运维方看到的只有密文。
-3. **断网/未注册也能用**：记忆库是本机本地库，不联网、不注册、不登录时召回与写入照常；离线期间的写入留在本地队列不丢，联网登录后随 autosync 自动补同步。但本机存储会随设备丢失而丢掉记录，请尽快注册开启同步。
-4. **企业可自建同步服务器**：服务端 `respire-server` 支持私有化部署（Docker Compose + Postgres），可整套架在企业内网离线运行，把同步端点指向自建服务即可，数据不出企业网络（部署步骤见 respire-docs《自托管》）。
+1. **Cloud sync recommended**: run `rsrs register` on this machine (you set the login password, and you save the system-generated A3 recovery code); records sync encrypted to the cloud and survive a device change or reinstall. The plugin warns when it detects a logged-out state.
+2. **The cloud stores ciphertext only**: records are encrypted locally before upload and the server keeps encrypted records only. Decryption, indexing and retrieval all happen on the device; the server needs no model and never holds an account's decryption key, so the cloud and its operators see ciphertext only.
+3. **Works offline or unregistered**: the memory store is local, so recall and writes keep working without network, registration or login. Writes made offline stay in the local queue and are not lost; after you log in they fill in through autosync. Local-only storage is lost with the device, so register and enable sync early.
+4. **Enterprises can self-host the sync server**: `respire-server` supports private deployment (Docker Compose + Postgres) and can run entirely offline inside a corporate network. Point the sync endpoint at your own service and data never leaves the corporate network (see "Self-hosting" in respire-docs).
 
-## 不装模型也可使用
+## Works without a model
 
-- 注册、登录、同步、召回都不依赖端侧模型。未装模型时，引擎按字面文本匹配召回，功能完整可用。
-- BGE-M3 模型（约 1.1GB）为可选安装：装上后召回按语义匹配，效果更好。执行 `rsrs model install && rsrs model activate m3`；未装时插件只提示一次，不影响正常使用。
+- Registration, login, sync and recall do not depend on an on-device model. Without one, the engine recalls by literal text matching and remains fully usable.
+- The BGE-M3 model (~1.1GB) is an optional install: with it, recall matches semantically and works better. Run `rsrs model install && rsrs model activate m3`; without it the plugin hints once and normal use is unaffected.
 
-## 安装
+## Install
 
-### 1. Qoder 插件
+### 1. The Qoder plugin
 
-直接按目录安装：
+Install from a directory:
 
 ```bash
 qoder plugins install /absolute/path/to/respire-qoder
 ```
 
-或按市场安装（本仓自带 `.qoder-plugin/marketplace.json`）：
+Or from the bundled marketplace (the repo ships `.qoder-plugin/marketplace.json`):
 
 ```bash
 qoder plugins marketplace add /absolute/path/to/respire-qoder
 qoder plugins install respire-qoder@risense
 ```
 
-装完在会话里执行 `/plugins reload`，或重启会话。Qoder Desktop 也可在插件设置里从本地目录安装；桌面版与 CLI 共用同一套插件目录与清单。
+After installing, run `/plugins reload` in the session or restart the session. Qoder Desktop can also install from a local directory in plugin settings; the desktop app and the CLI share the same plugin directory and manifest.
 
-### 2. 引擎（缺失时 agent 可代装）
+### 2. The engine (the agent can install it when missing)
 
 ```bash
 npm i -g rsrs-cli@latest
 rsrs --version
 ```
 
-无全局写权限时先试：
+Without global write permission, try:
 
 ```bash
 npm config set prefix ~/.npm-global
 npm i -g rsrs-cli@latest
 ```
 
-插件每轮实时探测引擎；装好后同一会话内即恢复召回与「记：」写入。
+The plugin probes for the engine every turn; once installed, recall and explicit stores resume within the same session.
 
-### 3. 注册并开启云同步（推荐，首次）
+### 3. Register and enable cloud sync (recommended, first run)
 
-本机执行 `rsrs register` 注册账号：本人设登录密码，系统生成 A3 开头的恢复码，须保存好，丢失后数据无法解开。注册完成后即已登录，autosync 常开；之后在本机 `rsrs login` 浏览器授权登录，`rsrs sync` 手动同步，`rsrs status` 查看状态。
+Run `rsrs register` on this machine: you set the login password and the system generates a recovery code starting with A3 that you must keep, since data cannot be unlocked without it. Registration also logs you in and autosync stays on; afterwards use `rsrs login` for browser authorization, `rsrs sync` for a manual sync and `rsrs status` to inspect state.
 
-不做这一步插件也能用，但记录只存本机：换设备、重装系统后取不到。SessionStart 探测到未登录时会自动注入注册引导，照做即可。
+The plugin works without this step, but records then stay local only and cannot be recovered after a device change or OS reinstall. When SessionStart detects a logged-out state it injects the registration guidance automatically.
 
-## 安装后的行为
+## Behaviour after install
 
-| 时机 | 行为 |
+| Moment | Behaviour |
 | --- | --- |
-| `SessionStart` | 注入记忆使用规则（何时召回、如何写入、限制）；一次探测，三种提示：未登录附注册引导，记忆库为空（<10 条）附首日使用引导，缺语义模型附可选安装说明；配置齐全时不提示 |
-| `UserPromptSubmit` | 自动执行 `rsrs recall --titles`，只注入分数＋8 位短 id＋标题，正文由 agent 用 `rsrs show <id>` 按需读取。默认不设过滤阈值，噪音由三处控制：引擎 skip 门、limit 5、标题形式注入 |
-| prompt 以「记：」「存：」「remember:」开头 | 直接 `rsrs remember … --importance important` 写入并回执，**回执按结果状态机**：`ok`/`warn`+有效 id（hex/uuid 白名单）→ **已写入**（warn 附引擎警告如 parent 未解析——不误报失败、不引导重发），随后 `show` 写后回读**全量核验**（id 相等＋标题相等＋完整正文相等才 verified；错 id/内容漂移→mismatch，回读不可用→unavailable，如实标注）；`pending` → **未写入**，转述候选（带短 id）＋引擎建议动作（改＞并＞挂＞存全量转达，先 `show` 读候选正文再决断）；超时/坏回执/缺 id/畸形 summary/未知 status → 一律**结果未知（unknown）**，回执只允许只读核实（`rsrs list`/`rsrs show`）并**明令禁止重发**（重复写风险）；仅 `fail` 是明确拒绝态，断言未接受。写入/回读/核实共享同一截止预算（`RESPITE_HOOK_BUDGET_S`，默认 20s，预留输出余量）——慢坏回执不再追加引擎调用，回执必达。回执要求模型抽「主语＋动作＋结果」事实句并 `retitle` 替换暂拟题 |
-| `Stop` | 存储检查：`decision: deny` 续跑一轮，提示把本轮新的事实、决定、约定、教训分条写入。**每个真实请求至多催一次**：`stop_hook_active=true` 放行 ＋ 本层**每会话独立原子锁**（`O_CREAT|O_EXCL` 独占创建——并发 Stop 只有一个能落锁；锁无 TTL，25 小时后仍占用，只有新真实 prompt 删除重新武装，`/nomem` 轮也算新请求；**宿主内部提示（Qoder Recap 白名单）不算新请求，不重新武装**——「真实请求→Stop 催→内部 Recap→Stop」不会二次催）双保险。**Stop 不查询引擎（零引擎调用）**。**磁盘凭证免催已取消**（终案）：跨事件（UserPromptSubmit→Stop 是两个独立 hook 进程）没有可靠的「当前请求」磁盘身份——「记：」成功回执仍诚实输出给模型，但不再影响 Stop 决策；**防重唯一依据是收尾锁的存在性**（latch 由新真实 prompt 删除重新武装），Stop 按节流策略催存、绝不凭磁盘旧记录免催（显式保存后仍可能提示一次收尾；模型后续行为未实机验收，Stop hook 自身不调用引擎）。写回执时刻存于**每会话独立状态文件 `st_<sid>.json`**（temp+rename 原子替换），仅作诊断轨迹：会话只写自己的文件，无共享 map 读改写交错。**落锁失败（状态目录不可写等）一律放行**：绝不无锁 deny——记忆层故障不得拦主任务结束。`store_nudge_every` 节流（1=每轮，0=关，N=每 N 轮） |
-| `/nomem` 前缀 | 本轮跳过召回 |
-| `$skill: 名称` 前缀 | 召回前剥除，避免技能名干扰召回查询 |
-| `skills/respire` | 按需加载的完整操作法；动作全由钩子驱动 |
+| `SessionStart` | Injects the memory usage rules (when to recall, how to write, limits); one probe, three hints: logged-out adds registration guidance, an empty store (<10 records) adds first-day guidance, a missing semantic model adds the optional install note; nothing is shown when everything is configured |
+| `UserPromptSubmit` | Runs `rsrs recall --titles` automatically and injects only the score, 8-char short id and title; the agent reads the body on demand with `rsrs show <id>`. No filter threshold by default; noise is bounded in three places: the engine skip gate, limit 5, and the title-only injection |
+| prompt starting with the store trigger or `remember:` | Writes directly with `rsrs remember … --importance important` and returns a receipt, **as a state machine**: `ok`/`warn` + valid id (hex/uuid whitelist) -> **written** (warn attaches the engine warning, e.g. an unresolved parent -- never reported as a failure, never prompts a resend), followed by a `show` read-back that **verifies everything** (id equal, title equal, full body equal for verified; wrong id or drifting content -> mismatch, unavailable read-back -> unavailable, labelled honestly); `pending` -> **not written**, restates the candidates (with short ids) and the engine-suggested actions (update > merge > attach > store relayed in full; read candidate bodies with `show` before deciding); timeout/bad receipt/missing id/malformed summary/unknown status -> always **unknown**, where the receipt allows read-only verification only (`rsrs list`/`rsrs show`) and **forbids a resend** (duplicate-write risk); only `fail` is an explicit rejection and asserts nothing was accepted. Write, read-back and verification share one deadline budget (`RESPITE_HOOK_BUDGET_S`, default 20s, with output headroom) -- a slow bad receipt adds no further engine call and the receipt always arrives. The receipt asks the model to extract a "subject + action + result" fact sentence and replace the provisional title with `retitle` |
+| `Stop` | Store check: `decision: deny` continues for one turn and asks the agent to write this turn's new facts, decisions, agreements and lessons one by one. **At most one nudge per real request**: `stop_hook_active=true` allows, plus this layer's **per-session atomic latch** (`O_CREAT|O_EXCL` exclusive create -- of concurrent Stop calls only one takes the lock; the lock has no TTL and stays held after 25 hours, only a new real prompt deletes it and re-arms it, and a `/nomem` turn also counts as a new request; **host-internal prompts (Qoder Recap whitelist) are not new requests and do not re-arm**, so "real request -> Stop nudge -> internal Recap -> Stop" never nudges twice). **Stop makes no engine call at all**. **Disk-based suppression is cancelled** (final decision): across events (UserPromptSubmit and Stop are two separate hook processes) there is no reliable disk identity for "the current request" -- the explicit-store receipt is still returned honestly but no longer affects the Stop decision; **the only de-dup basis is latch existence** (a new real prompt deletes and re-arms it), so Stop nudges by throttle policy and never suppresses from an old disk record (an explicit store may still be followed by one closing hint; model behaviour after that has not been verified on a live host, and the Stop hook itself never calls the engine). Receipt timestamps live in a **per-session state file `st_<sid>.json`** (temp+rename atomic replace) as a diagnostic trail only: a session writes only its own file, with no shared-map read-modify-write interleaving. **A failed lock (unwritable state dir etc.) always allows**: never deny without a lock -- a memory-layer fault must not block the end of the main task. `store_nudge_every` throttles it (1 = every turn, 0 = off, N = every Nth) |
+| `/nomem` prefix | Skips recall for this turn |
+| `$skill: name` prefix | Stripped before recall so the skill name cannot disturb the recall query |
+| `skills/respire` | The full on-demand playbook; every action is driven by the hooks |
 
-## 调优（可选）
+## Tuning (optional)
 
-配置优先级：
+Configuration precedence:
 
-1. `RESPITE_CONFIG` 环境变量
+1. `RESPITE_CONFIG` environment variable
 2. `$QODER_PLUGIN_DATA/respire.config.json`
-3. `<插件根>/hooks/respire.config.json`
+3. `<plugin root>/hooks/respire.config.json`
 
-从 example 复制即可：
+Copy from the example:
 
 ```bash
 cp hooks/respire.config.example.json hooks/respire.config.json
 ```
 
-| 字段 | 默认 | 含义 |
+| Field | Default | Meaning |
 | --- | --- | --- |
-| `rsrs` | `""` | 引擎路径；空 = 自动探测（`RESPIRE_BIN` → PATH 的 `respire`/`rsrs` → `~/.local/bin` → `~/.rsrs/bin`） |
-| `recall_threshold` | `0.0` | 召回下限；0=默认关（引擎直出），设正数才过滤 |
-| `recall_limit` | `5` | 取前 N 条 |
-| `min_prompt_chars` | `2` | 1 字才跳，2 字起即查 |
-| `session_rules` | `true` | 是否注入 SessionStart 规则；若你已用 `rsrs inject` 往 `~/.qoder/rules` 写过 respire 全文，建议设 `false` 避免重复注入 |
-| `budget_chars` | `1500` | 单轮注入总预算 |
-| `enabled` | `true` | 总开关：false=全线静默 |
-| `store_nudge_every` | `1` | Stop 节流：1=每轮、N=每 N 轮、0=关 |
-| `log` | `true` | `hook.log` 留痕（超 256KB 清轮） |
+| `rsrs` | `""` | Engine path; empty = auto-detect (`RESPIRE_BIN` -> `respire`/`rsrs` on PATH -> `~/.local/bin` -> `~/.rsrs/bin`) |
+| `recall_threshold` | `0.0` | Recall floor; 0 = off by default (raw engine output), a positive value enables filtering |
+| `recall_limit` | `5` | Keep the first N hits |
+| `min_prompt_chars` | `2` | 1 char is skipped, 2 chars triggers a query |
+| `session_rules` | `true` | Whether to inject the SessionStart rules; if you already wrote the full respire rules into `~/.qoder/rules` with `rsrs inject`, set `false` to avoid duplicate injection |
+| `budget_chars` | `1500` | Total injection budget per turn |
+| `enabled` | `true` | Master switch: false = everything silent |
+| `store_nudge_every` | `1` | Stop throttle: 1 = every turn, N = every Nth, 0 = off |
+| `log` | `true` | `hook.log` trail (cleared above 256KB) |
 
-其它环境变量：`RESPIRE_BIN`（引擎路径）、`RESPITE_RSRS`（兼容旧名）、`RESPITE_LOG`、`RESPITE_NUDGE_STATE`、`RESPITE_TURN_STATE`（一次收尾锁/写凭证状态目录）、`RESPITE_HOOK_BUDGET_S`（写链共享截止预算，默认 20s）。
+Other environment variables: `RESPIRE_BIN` (engine path), `RESPITE_RSRS` (legacy name), `RESPITE_LOG`, `RESPITE_NUDGE_STATE`, `RESPITE_TURN_STATE` (latch/receipt state directory), `RESPITE_HOOK_BUDGET_S` (shared write-chain deadline, default 20s).
 
-过滤策略：默认不设阈值。噪音由三处控制：引擎 skip 门、limit 5、标题形式注入。漏掉真正相关的记录代价更高，所以宁可多显示两行标题。
+Filtering policy: no threshold by default. Noise is bounded in three places: the engine skip gate, limit 5, and title-only injection. Missing a genuinely relevant record costs more, so showing two extra title lines is preferred.
 
-## 验证
+## Verification
 
 ```bash
 python3 scripts/validate_plugin.py
@@ -112,50 +112,50 @@ python3 -m unittest discover -s tests -p test_release.py -v
 bash tests/test_hooks.sh
 ```
 
-前三项不需要真实引擎：守卫测试使用临时桩、配置和日志，强制验证普通输入确实召回，再验证凭据零调用，以及死桩必须使正向对照失败。CI 在 Linux、Windows、macOS 运行这三项。`test_hooks.sh` 是旧的真实引擎套件，不在 CI 中运行。
+The first three need no real engine: the guard test uses temporary stubs, config and logs, forces a positive control proving ordinary input really recalls, then proves a credential triggers zero calls and that a dead stub must fail the positive control. CI runs these three on Linux, Windows and macOS. `test_hooks.sh` is the legacy real-engine suite and does not run in CI.
 
-### GitHub Actions 发布
+### GitHub Actions release
 
-PR 和 main 推送仅测试、打包，不发布。向主仓推送 `vMAJOR.MINOR.PATCH` 标签后，工作流验证标签提交属于 main、标签版本与 manifest/hook 一致，从该提交 `git archive` 生成根目录 ZIP。发布 job 才获得仓库 `GITHUB_TOKEN` 的 `contents: write`，无需新增 PAT、OAuth 或仓库 secret。
+PRs and pushes to main only test and package, never release. Pushing a `vMAJOR.MINOR.PATCH` tag to the main repo makes the workflow verify that the tagged commit belongs to main and that the tag version matches the manifest/hook, then produce a root-level ZIP with `git archive` from that commit. Only the release job gets `contents: write` on the repo `GITHUB_TOKEN`, so no new PAT, OAuth app or repo secret is needed.
 
-恢复一个已有标签的未完成发布：在 Actions → CI and release → Run workflow 中选择 **main**，填写已有 `tag` 与其精确 40 位提交 `expected_sha`。例如 `v0.6.8` 对应 `c969187b085f934b1edce27de25117a8591dc661`。工作流从该标签提交打包，不移动标签、不执行旧标签中的代码，也不把当前 main 当作旧标签代码。
+To resume an unfinished release for an existing tag: in Actions -> CI and release -> Run workflow choose **main**, and fill in the existing `tag` with its exact 40-char `expected_sha`. For example `v0.6.8` maps to `c969187b085f934b1edce27de25117a8591dc661`. The workflow packages from that tag commit, never moves the tag, never executes code from the old tag, and never treats current main as the old tag's code.
 
-ZIP 注释记录提交 SHA；Release 同时上传 ZIP 和 `SHA256SUMS`。重复执行只接受来源标记相同且 SHA256 一致的已有资产，补齐缺失资产后发布；遇到未知来源、不同内容或额外资产即停止，绝不覆盖。上传中断时可能保留待恢复的草稿。`check` 和 `package` 默认只读；fork PR 不能进入写发布 job，工作流不使用 `pull_request_target`。
+The ZIP comment records the commit SHA; the Release uploads both the ZIP and `SHA256SUMS`. A repeated run only accepts an existing asset with the same provenance marker and an identical SHA256, fills in missing assets and then releases; an unknown provenance, different content or an extra asset stops it, and nothing is overwritten. An interrupted upload may leave a draft to resume. `check` and `package` are read-only by default; fork PRs cannot reach the write release job and the workflow does not use `pull_request_target`.
 
-隔离测试不等于真实 Qoder 宿主/引擎端到端验收，也不证明旧真实引擎套件全部通过。
+Isolated tests are not an end-to-end acceptance of a real Qoder host/engine, nor proof that the legacy real-engine suite passes entirely.
 
-直接验钩子（不依赖 Qoder 是否已加载插件）：
+Exercise the hook directly (independent of whether Qoder loaded the plugin):
 
 ```bash
-echo '{"hook_event_name":"UserPromptSubmit","prompt":"respire 记忆"}' \
+echo '{"hook_event_name":"UserPromptSubmit","prompt":"respire memory"}' \
   | python3 hooks/respire.py UserPromptSubmit
 ```
 
-写探针（会写真实记忆库，用随机无义串并自动 `rsrs forget` 清理）：
+Write probe (writes to the real memory store with a random nonsense string and cleans up via `rsrs forget`):
 
 ```bash
 bash tests/test_hooks.sh --store
 ```
 
-## 设计要点
+## Design notes
 
-- **fail-open**：hook 出现任何异常时输出空内容并 `exit 0`，不中断会话；异常写入 `hook.log`
-- **纯文本输出**：SessionStart / UserPromptSubmit 的 stdout 即附加上下文，不会误拦截会话
-- **只注入标题**：召回结果只给 id/score/title，正文由 agent 用 `show` 按需读取
-- **写入判断交给引擎**：写入时不带 `--force`，引擎返回的 `pending` 候选原样转述给模型决定
-- **跨平台回退**：hook 命令带 `python3 || python`；配置与日志写 `QODER_PLUGIN_DATA`
-- **包内自检**：结构、清单、hooks 形状、Python 可编译、敏感扫描
+- **fail-open**: on any exception the hook prints nothing and `exit 0` without interrupting the session; exceptions are written to `hook.log`
+- **Plain-text output**: SessionStart / UserPromptSubmit stdout is additional context and never mis-blocks a session
+- **Titles only**: recall returns id/score/title only; the agent reads bodies on demand with `show`
+- **The engine decides writes**: no `--force` on write; `pending` candidates from the engine are relayed as-is for the model to decide
+- **Cross-platform fallback**: hook commands use `python3 || python`; config and logs go under `QODER_PLUGIN_DATA`
+- **In-package self-check**: structure, manifest, hooks shape, Python compilability, secret scan
 
-## 已知边界
+## Known limits
 
-- **首次召回较慢**：会话开始后的第一次召回需要启动引擎 runtime（安装了语义模型时还要加载模型），实测约 7 秒。插件按此设了宽松超时（recall 14s、probe 10s、单次 hook 总 20s），启动失败时在会话开头注入诊断信息。引擎启动后常驻，后续召回通常秒级返回。
+- **The first recall is slow**: the first recall after a session starts must boot the engine runtime (and load the semantic model if installed), measured at about 7 seconds. The plugin sets generous timeouts for that (recall 14s, probe 10s, 20s per hook in total) and injects diagnostics at the start of the session when the boot fails. Once the engine is resident, later recalls usually return in well under a second.
 
-## 反馈与贡献
+## Feedback and contributions
 
-- 仓库与源码：<https://github.com/risense-ai/respire-qoder>
-- 遇到问题、有功能建议：提 [Issue](https://github.com/risense-ai/respire-qoder/issues)，附会话场景与 `hook.log`（`QODER_PLUGIN_DATA/hook.log`，超 256KB 自动清轮）能大幅加速定位。
-- 想贡献代码或文档：欢迎提 [Pull request](https://github.com/risense-ai/respire-qoder/pulls)，保持与现有风格一致，改动后跑一遍 `python3 scripts/validate_plugin.py` 与 `bash tests/test_hooks.sh`。
-- 产品本身的问题（引擎、账号、同步）：<https://github.com/risense-ai/respire> 的 Issues，或官网 <https://rsrs.rs>。
+- Repo and source: <https://github.com/risense-ai/respire-qoder>
+- Problems or feature ideas: file an [Issue](https://github.com/risense-ai/respire-qoder/issues) with the session scenario and `hook.log` (`QODER_PLUGIN_DATA/hook.log`, cleared above 256KB), which speeds up diagnosis a lot.
+- Code or docs contributions: a [Pull request](https://github.com/risense-ai/respire-qoder/pulls) is welcome; keep the existing style and run `python3 scripts/validate_plugin.py` and `bash tests/test_hooks.sh` after changing anything.
+- Product issues (engine, account, sync): Issues at <https://github.com/risense-ai/respire> or the website <https://rsrs.rs>.
 
 ## License
 

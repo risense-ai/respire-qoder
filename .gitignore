@@ -1,4 +1,4 @@
-# 用户本地配置不进仓（安装时由 example 生成）
+# User-local config is not committed (generated from the example at install time)
 respire.config.json
 hook.log
 .nudge_counter
@@ -8,8 +8,8 @@ __pycache__/
 .DS_Store
 release-out/
 .store_turn
-# 0.6.10 一次收尾锁/写凭证状态（data_dir 回退到脚本目录时落在 hooks/ 下）
+# 0.6.10 one-shot latch / write-receipt state (lands under hooks/ when data_dir falls back)
 .latch_*
 turn_map.json
-# 0.6.11 每会话独立状态文件（st_<sid>.json；turn_map.json 为旧版遗留）
+# 0.6.11 per-session state files (st_<sid>.json; turn_map.json is the legacy leftover)
 st_*.json
