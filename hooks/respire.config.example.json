@@ -7,8 +7,8 @@
   "budget_chars": 1500,
   "enabled": true,
   "skip_prefixes": [
-    "你正在为 Qoder 任务监控编写简短的会话 Recap",
-    "你正在为 Qoder",
+    "\u4f60\u6b63\u5728\u4e3a Qoder \u4efb\u52a1\u76d1\u63a7\u7f16\u5199\u7b80\u77ed\u7684\u4f1a\u8bdd Recap",
+    "\u4f60\u6b63\u5728\u4e3a Qoder",
     "You are writing a brief session recap for Qoder",
     "You are writing a short session recap for Qoder"
   ]

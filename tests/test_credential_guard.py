@@ -129,7 +129,7 @@ print(json.dumps({'command':'recall','status':'ok','details':[
     def test_store_prefix_credential_is_blocked(self):
         self.positive_control()
         before = self.recorded()
-        output = self.call('记：数据库密码 = hunter2u')
+        output = self.call('\u8bb0\uff1a\u6570\u636e\u5e93\u5bc6\u7801 = hunter2u')
         self.assertIn('contains a credential', output)
         self.assertEqual(self.recorded(), before)
         self.assertNotIn('hunter2u', output + self.log.read_text())

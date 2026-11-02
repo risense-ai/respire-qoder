@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""respire-qoder 包自检（零第三方依赖）。
+"""respire-qoder package self-check (no third-party dependencies).
 
-用法: python3 scripts/validate_plugin.py
-退出码 0 = 通过；任一 FAIL = 1。
+Usage: python3 scripts/validate_plugin.py
+Exit code 0 = pass; any FAIL = 1.
 """
 from __future__ import annotations
 
