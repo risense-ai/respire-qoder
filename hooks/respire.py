@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.16"
+VERSION = "0.6.17"
 
 # Timeout windows (seconds): must cover the rsrs runtime cold start (doctor model load measured
 # at 7s+), otherwise the first turn is silent and only later turns work.
