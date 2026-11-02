@@ -84,7 +84,7 @@ def main() -> None:
     hooks = load_json("hooks/hooks.json")
     if hooks:
         events = hooks.get("hooks") or {}
-        for ev in ("SessionStart", "UserPromptSubmit", "Stop"):
+        for ev in ("SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"):
             if ev not in events:
                 fail(f"hooks.json missing event {ev}")
         text = json.dumps(events, ensure_ascii=False)

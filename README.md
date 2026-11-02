@@ -139,7 +139,7 @@ bash tests/test_hooks.sh --store
 
 ## Design notes
 
-- **fail-open**: on any exception the hook prints nothing and `exit 0` without interrupting the session; exceptions are written to `hook.log`
+- **fail-open for automatic guidance**: guidance errors remain silent and exit 0; identified PreToolUse memory writes deny on guard or parent-verification errors
 - **Plain-text output**: SessionStart / UserPromptSubmit stdout is additional context and never mis-blocks a session
 - **Titles only**: recall returns id/score/title only; the agent reads bodies on demand with `show`
 - **The engine decides writes**: no `--force` on write; `pending` candidates from the engine are relayed as-is for the model to decide
@@ -160,6 +160,14 @@ bash tests/test_hooks.sh --store
 ## License
 
 MIT
+
+### PreToolUse write guard
+
+Before visible Bash calls, the hook parses literal rsrs remember/update/attach arguments and every command in a sequence. It rejects force bypasses, important creation without a parent, explicit empty or invalid parents, and identified dynamic or wrapped memory writes. Use one explicit literal command when parsing is refused. Non-memory commands and read-only calls remain silent.
+
+A non-empty parent must be an ID that an existing runner can verify with `rsrs --client-only show <id> --json`. Verification has a 16-second total budget inside the 20-second hook timeout; missing runners, errors, malformed receipts and timeouts deny the write and leave placement pending. No runtime is started and the hook never writes memory. Denials contain only static English guidance and exit 0, so the Python fallback cannot swallow them. Automatic guidance still honors the enabled switch; this placement guard remains active while the hook component is installed.
+
+Host-visible `memory_remember`, `memory_update` and `memory_attach` MCP names, including `mcp__<server>__memory_*`, are denied because the hook cannot bind an arbitrary MCP server to the local target profile. Use an explicit rsrs command through the guarded shell instead. This is not a general shell sandbox: aliases, arbitrary external scripts, hidden API calls and tools that do not emit PreToolUse remain outside its visibility. A verified parent exists; the model must still read its full body and judge relevance before writing. Actual model termination and installation behavior require host verification.
 
 ### Stop verification boundary
 

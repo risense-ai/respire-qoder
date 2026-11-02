@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.16 — 2026-11-02
+
+- Add PreToolUse JSON denial for important writes without a verified parent, force bypasses, explicit parent clearing and opaque memory commands.
+- Verify literal parents with client-only show, preserve unrelated tools and document the interception boundary.
+
 ## 0.6.15 — 2026-11-02
 
 - Remove all non-ASCII (CJK) text from hooks, config, tests, docs and manifests. Behaviour is

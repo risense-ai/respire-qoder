@@ -26,6 +26,18 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${QODER_PLUGIN_ROOT}/hooks/respire.py\" PreToolUse || python \"${QODER_PLUGIN_ROOT}/hooks/respire.py\" PreToolUse",
+            "timeout": 20,
+            "statusMessage": "respire: checking memory placement"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
