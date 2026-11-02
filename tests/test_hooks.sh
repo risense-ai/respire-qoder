@@ -161,47 +161,18 @@ run_stub() {
 STOP_JSON='{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "selftest"}'
 reset_state() { rm -rf "$TMP/turnstate" "$TMP/nudge"; }
 
-# ---- 写回执状态机（§7.1/§7.2 契约；全走桩，零真库依赖） ----
+# ---- Explicit prefixes stay pending; legacy receipt helper coverage is in test_receipts.py. ----
 FACT="fixed stub fact sentence one."
 reset_state
-out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_ok)
-check "ok 写入回执含短 id" "$out" "含:(dddddddd)"
-check "ok 写入回读核验标注" "$out" "含:verified by read-back"
-check "ok 回执约束AI抽事实句retitle" "$out" "含:rsrs retitle dddddddd"
-out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_warn)
-check "warn 已写入不误报失败" "$out" "含:Saved with warnings"
-check "warn 回执附引擎警告摘要" "$out" "含:parent (cause) cannot be resolved"
-check "warn 不引导重发" "$out" "不含:did not accept"
-check "warn 仍给 retitle 精修入口" "$out" "含:retitle eeeeeeee"
-out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_pend)
-check "pending 明示未写入" "$out" "含:nothing was written"
-check "pending 转述候选带短id" "$out" "含:[aaaabbbb]"
-check "pending 保留建议动作merge" "$out" "含:--merge-ids"
-check "pending 保留建议动作force" "$out" "含:--force"
-out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_silent stale)
-check "坏回执归为unknown" "$out" "含:store unknown"
-check "unknown 只读核实指引" "$out" "含:rsrs list --limit 3"
-check "unknown 禁止重发" "$out" "含:Do NOT resend"
-check "unknown 不误报失败" "$out" "不含:did not accept"
-out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_silent fresh)
-check "unknown+新条目报告可能已写" "$out" "含:may already be written"
-check "unknown+新条目给出只读id" "$out" "含:rsrs show ffffffff"
-out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_slow)
-check "超时归为unknown" "$out" "含:store unknown"
-check "超时回执禁重发" "$out" "含:Do NOT resend"
-check "超时不引导手动重发remember" "$out" "不含:run rsrs remember manually"
-out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_showbad)
-check "回读不一致如实标注" "$out" "含:DIFFERENT id/title/content"
-# 坏 details 反例（复审轮#2）：show 回 ok 信封但 details 非空数组/字符串——局部降级 unavailable，
-# 绝不外抛成空输出吞掉已经成功的 Saved 回执，也不误报失败/引导重发
-out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_showarr)
-check "details为数组时Saved回执不消失" "$out" "含:Saved:"
-check "details为数组时回读降级unavailable" "$out" "含:Read-back unavailable"
-check "details为数组时不误报失败" "$out" "不含:did not accept"
-out=$(STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" rem_showstr)
-check "details为字符串时Saved回执不消失" "$out" "含:Saved:"
-check "details为字符串时回读降级unavailable" "$out" "含:Read-back unavailable"
-check "details为字符串时不误报失败" "$out" "不含:did not accept"
+for mode in rem_ok rem_warn rem_pend rem_silent rem_slow rem_showbad rem_show_badarr rem_show_strdet; do
+  out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"记：$FACT\", \"session_id\": \"selftest\"}" "$mode")
+  check "prefix pending ($mode)" "$out" "含:store pending"
+  check "prefix not written ($mode)" "$out" "含:nothing was written"
+  check "prefix policy ($mode)" "$out" "含:rsrs prompt"
+  check "prefix candidate bodies ($mode)" "$out" "含:rsrs show"
+  check "prefix placement order ($mode)" "$out" "含:update > merge > attach > new"
+  check "prefix parent required ($mode)" "$out" "含:remain pending"
+done
 
 # ---- Stop 存储检查（新契约：fail-open + 请求级凭证 + 一次收尾锁；每场景独立 reset 状态） ----
 stop_case() {  # stop_case <STUB_LIST>：reset 后单次 Stop，输出入 OUT_STOP

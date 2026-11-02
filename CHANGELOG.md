@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.15 — 2026-11-02
+
+- Explicit memory prefixes return pending without any engine write.
+- Require engine policy, same-topic candidate bodies, and update > merge > attach > new; new important records need a reviewed reasonable parent, otherwise stay pending without force or importance downgrade.
+- Keep actual write receipt unknown/no-retry coverage separate from live prefix checks.
+
 ## 0.6.13 — 2026-11-01
 
 - Reject invalid write IDs and mismatched/non-string read-back fields; preserve committed receipts without retries.
