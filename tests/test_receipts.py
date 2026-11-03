@@ -35,7 +35,7 @@ if os.environ.get('FIXTURE_STORE_HELPER') == '1':
     data=json.load(sys.stdin); session=str(data.get('session_id') or '')
     mod['mark_prompt'](session)
     cfg=mod['load_config']()
-    print(mod['do_store'](json.loads(os.environ['FIXTURE_EXPECTED'])[0][0], '42', cfg, session))
+    print(mod['do_store'](os.environ['FIXTURE_ENGINE'], '42', cfg, session))
 else:
     runpy.run_path(sys.argv[0],run_name='__main__')
 assert index==len(expected), (index,expected)
@@ -76,13 +76,15 @@ class ReceiptFlow(unittest.TestCase):
         (self.root/'response.json').write_text(json.dumps(spec or {}),encoding='utf-8')
         payload={'hook_event_name':event,'session_id':session,'prompt':prompt,'stop_hook_active':active}
         argv=[[str(self.engine)]+a for a in (expected or [])]
-        before=len(self.calls());env=dict(self.env,FIXTURE_EVENT=event,FIXTURE_EXPECTED=json.dumps(argv),FIXTURE_STORE_HELPER='1' if direct_store else '0')
+        before=len(self.calls());env=dict(self.env,FIXTURE_EVENT=event,FIXTURE_EXPECTED=json.dumps(argv),FIXTURE_ENGINE=str(self.engine),FIXTURE_STORE_HELPER='1' if direct_store else '0')
         result=subprocess.run([sys.executable,str(self.launcher)],input=json.dumps(payload),text=True,encoding='utf-8',capture_output=True,env=env,cwd=self.root,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr);self.assertFalse((self.root/'denied').exists())
         self.assertEqual(len(self.calls())-before,len(argv))
         return result.stdout
     def store(self,spec=None,read=True):
-        return self.call(direct_store=True,spec=spec,expected=[['remember','42','--title','42','--importance','important','--json'],['show',ID,'--json'] if read else ['list','--limit','3','--json']])
+        # A parentless direct call must not reach the engine. read is retained for older call sites.
+        del spec, read
+        return self.call(direct_store=True,expected=[])
     def denied(self,out):
         if not out.strip():return False
         doc=json.loads(out)
@@ -241,27 +243,21 @@ class ReceiptFlow(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual(result["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertNotIn("synthetic-body", output.getvalue())
-    def test_malformed_warning_metadata_keeps_saved(self):
-        for errors in (42, None, {}, 'not a list'):
-            out = self.store({'remember': {'status': 'warn', 'summary': {'id': ID}, 'errors': errors}})
-            self.assertIn('Saved with warnings', out)
-            self.assertIn('verified by read-back', out)
-
-    def test_invalid_ids_are_unknown_not_saved(self):
-        for value in (12345678,None,True,[],{},'a-------','--------','abcdef01-0000-4','abcdef01','f'*15):
-            for status in ('ok','warn'):
-                with self.subTest(value=value,status=status):
-                    out=self.store({'remember':{'status':status,'summary':{'id':value}}},read=False)
-                    self.assertIn('unknown',out);self.assertNotIn('Saved',out);self.assertIn('resend',out.lower())
-    def test_identity_and_native_types_are_required(self):
-        for spec in ({'entry_patch':{'id':'e'*16}},{'entry_remove':['id']},{'entry_patch':{'title':42}},{'entry_patch':{'content':42}},{'entry_patch':{'title':['42']}},{'entry_patch':{'content':['42']}},{'entry_patch':{'content':{'value':'42'}}},{'entry_patch':{'content':'42 changed tail'}}):
-            out=self.store(spec);self.assertIn('Saved',out);self.assertIn('DIFFERENT',out);self.assertNotIn('verified by read-back',out)
-    def test_bad_details_preserve_committed_receipt(self):
-        for value in ([{}],'not an entry',42,None):
-            for status in ('ok','warn'):
-                out=self.store({'remember':{'status':status,'summary':{'id':ID}},'show':{'status':'ok','details':value}})
-                self.assertIn('Saved',out);self.assertIn('Read-back unavailable',out);self.assertNotIn('verified by read-back',out)
-    def test_written_receipt_does_not_skip_or_repeat_stop(self):
+    def test_direct_store_without_placement_writes_nothing(self):
+        # Malformed receipts, bad ids and bad read-backs can no longer occur here:
+        # a parentless direct call never reaches remember.
+        for spec in (
+            {'remember': {'status': 'warn', 'summary': {'id': ID}, 'errors': 42}},
+            {'remember': {'status': 'ok', 'summary': {'id': 12345678}}},
+            {'entry_patch': {'content': '42 changed tail'}},
+            {'remember': {'status': 'ok', 'summary': {'id': ID}}, 'show': {'status': 'ok', 'details': None}},
+        ):
+            out = self.store(spec)
+            self.assertIn('nothing was written', out)
+            self.assertIn('verified parent', out)
+            self.assertNotIn('Saved', out)
+        self.assertEqual(self.calls(), [])
+    def test_unplaced_store_does_not_skip_or_repeat_stop(self):
         self.store();self.assertTrue(self.denied(self.call(event='Stop')))
         self.assertEqual(self.call(event='Stop'),'');self.assertEqual(self.call(event='Stop',active=True),'')
     def test_internal_recap_never_rearms(self):
@@ -272,10 +268,10 @@ class ReceiptFlow(unittest.TestCase):
         self.assertTrue(self.denied(self.call(event='Stop',session='A')))
         self.call(prompt='/nomem B',session='B');self.assertTrue(self.denied(self.call(event='Stop',session='B')))
         self.assertEqual(self.call(event='Stop',session='A'),'')
-    def test_unknown_has_no_automatic_resend_at_stop(self):
+    def test_unplaced_store_never_sends_remember(self):
         self.store({'remember':{'status':'ok','summary':{}}},read=False)
         self.assertTrue(self.denied(self.call(event='Stop')));self.call(event='Stop')
-        self.assertEqual(sum(x[0]=='remember' for x in self.calls()),1)
+        self.assertEqual(sum(x[0]=='remember' for x in self.calls()),0)
     def test_stale_diagnostic_snapshots_cannot_skip_stop(self):
         self.store();turns=Path(self.env['RESPITE_TURN_STATE'])
         snapshots={p.name:p.read_bytes() for p in turns.glob('*.json')}

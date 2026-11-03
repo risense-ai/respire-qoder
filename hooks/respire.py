@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.17"
+VERSION = "0.6.18"
 
 # Timeout windows (seconds): must cover the rsrs runtime cold start (doctor model load measured
 # at 7s+), otherwise the first turn is silent and only later turns work.
@@ -450,9 +450,11 @@ def verify_recent_write(bin_path: str, t0: float, max_wait: float = 0):
     return str(d.get("id") or ""), str(d.get("title") or "")
 
 
-def do_store(bin_path: str, content: str, cfg: dict, session: str = "") -> str:
+def do_store(bin_path: str, content: str, cfg: dict, session: str = "",
+             parent: str = "", title: str = "") -> str:
     """Explicit store receipt state machine (aligned with the CLI envelope semantics,
     audit report 7.1/7.2):
+      missing parent/title -> not written: the hook never places a record by itself
       ok + summary.id   -> written: receipt after a show read-back (verified/mismatch/unavailable)
       warn + summary.id -> written with warnings (parent unresolved / post-remember hook warning) --
                            never a failure, never prompt a resend; attach the errors summary and read back
@@ -461,16 +463,26 @@ def do_store(bin_path: str, content: str, cfg: dict, session: str = "") -> str:
       timeout/abort     -> unknown: no further engine calls (budget exhausted); read-only verify only
       bad envelope/no output -> unknown: read-only list first (last 3), never auto-rewrite
       any other explicit rejection -> fail: report errors, never auto-retry
+    A direct call must already carry a verified parent id and a complete fact-sentence title.
+    Inventing either one here is what left important records as loose roots.
     """
     if not content:
         log_event(cfg, "store", "empty_content")
         return ""
-    title = extract_title(content) or "respire quick store"
+    parent_ok = isinstance(parent, str) and re.fullmatch(
+        r"(?:[a-fA-F0-9]{8,64}|[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12})", parent)
+    title = title.strip() if isinstance(title, str) else ""
+    if not parent_ok or not title:
+        log_event(cfg, "store", "placement_required", f"parent={bool(parent_ok)} title={bool(title)}")
+        return ("\u3010respire \u00b7 store pending\u3011nothing was written. This path does not "
+                "invent a title or pick a parent. Read rsrs prompt, recall same-topic candidates, "
+                "read each body with rsrs show, then attach under a verified parent "
+                "(update > merge > attach > new). Stay pending when no reasonable parent exists.")
     t0 = time.time()
     r = None
     try:
         r = run_rsrs(bin_path, ["remember", content, "--title", title,
-                                "--importance", "important", "--json"], STORE_T)
+                                "--importance", "important", "--parent", parent, "--json"], STORE_T)
     except Exception as e:
         log_event(cfg, "store", "timeout_or_error", f"{type(e).__name__}: {e}", (time.time() - t0) * 1000)
     ms = (time.time() - t0) * 1000

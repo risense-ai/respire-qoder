@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.18 — 2026-11-03
+
+- `do_store` no longer writes an important record by itself. A direct call without a verified
+  parent id and a complete fact-sentence title returns store-pending and makes no engine call,
+  so the hook cannot mint a loose root or a placeholder title. A reviewed call passes
+  `--parent` through.
+
 ## 0.6.17 — 2026-11-02
 
 ### Changed
