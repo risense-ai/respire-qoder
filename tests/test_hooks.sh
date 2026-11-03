@@ -518,29 +518,13 @@ if [ "$WITH_STORE" = 1 ] && [ "$HAVE_RSRS" = 1 ]; then
   # string (domain words like "probe/test/memory" collide at 30%+ similarity and go pending).
   MARK="zq$(date +%s)$RANDOM kw7f2 random meaningless marker"
   out=$(run UserPromptSubmit "$STORE_TRIGGER$MARK")
-  if printf '%s' "$out" | grep -qF "store pending"; then
-    PASS=$((PASS+1)); echo "SKIP  random string judged a dedup pending (the live store's dedup gate tightened; the ok receipt path is covered by the stub)"
-  else
-    check "store success receipt" "$out" "has:Saved:"
-    check "receipt asks the AI to extract a fact sentence and retitle" "$out" "has:rsrs retitle"
-    SID=$(printf '%s' "$out" | sed -n 's/.*(\([0-9a-f]\{8\}\))\..*/\1/p')
-    check "receipt carries a short id" "$SID" "nonempty"
-    if [ -n "$SID" ]; then
-      rc=$(rsrs forget "$SID" --json 2>/dev/null | jq -r '.status // "err"')
-      check "probe cleanup (status=ok)" "$rc" "has:ok"
-    fi
-  fi
-  # Dedup pending: restating a stable store entry (title 97251289) must collide with high
-  # similarity -> pending, not written.
+  check "explicit prefix writes nothing" "$out" "has:nothing was written"
+  check "explicit prefix stays pending" "$out" "has:store pending"
+  check "explicit prefix names the parent requirement" "$out" "has:--parent"
+  # A restated entry takes the same path: the hook does not write, so nothing needs cleanup.
   out=$(run UserPromptSubmit "$STORE_TRIGGER$DEDUP_PROMPT")
-  check "dedup pending restates candidates" "$out" "has:store pending"
-  check "pending lists candidates and the decision method" "$out" "has:--force"
-  # Fallback: if it was judged a direct write after all (store changed), clean up the probe.
-  if printf '%s' "$out" | grep -qF "Saved:"; then
-    BID=$(printf '%s' "$out" | sed -n 's/.*(\([0-9a-f]\{8\}\))\..*/\1/p')
-    [ -n "$BID" ] && rsrs forget "$BID" --json >/dev/null 2>&1
-    echo "  (note: it was judged a direct write rather than pending; cleaned up $BID as a fallback)"
-  fi
+  check "restated entry also stays pending" "$out" "has:store pending"
+  check "restated entry was not written" "$out" "has:nothing was written"
 elif [ "$WITH_STORE" = 1 ]; then
   echo "SKIP  write probe (no rsrs engine found, cannot write the real store)"
 else
