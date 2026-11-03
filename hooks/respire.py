@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.6.18"
+VERSION = "0.6.19"
 
 # Timeout windows (seconds): must cover the rsrs runtime cold start (doctor model load measured
 # at 7s+), otherwise the first turn is silent and only later turns work.
@@ -47,7 +47,9 @@ DEFAULTS = {
     "budget_chars": 1500,       # total injection budget per turn
     "log": True,                # lightweight hook.log trail (one line per event)
     "enabled": True,           # master switch: false = whole memory layer silent
-    "store_nudge_every": 1,     # Stop store-check throttle: 1 = every turn, N = every Nth, 0 = off
+    "store_nudge_every": 4,     # Stop store-check throttle: 1 = every turn, N = every Nth, 0 = off.
+                                # P1-1 default 4: the end-of-work nudge fires every 4th real Stop
+                                # instead of every turn (plan: every 3-5 turns, no per-turn model turn)
     "skip_prefixes": [          # prompts starting with these are host-internal: no recall, no store
         "\u4f60\u6b63\u5728\u4e3a Qoder \u4efb\u52a1\u76d1\u63a7\u7f16\u5199\u7b80\u77ed\u7684\u4f1a\u8bdd Recap",
         "\u4f60\u6b63\u5728\u4e3a Qoder",
@@ -779,7 +781,7 @@ def on_stop(data: dict, cfg: dict, engine) -> str:
         return ""
     if not engine:
         return ""
-    every = int(cfg.get("store_nudge_every", 1))
+    every = int(cfg.get("store_nudge_every", 4))  # fallback mirrors DEFAULTS (P1-1)
     if every <= 0:
         return ""
     try:  # throttle counter (on failure do not block)
