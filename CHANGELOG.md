@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.19 — 2026-11-04
+
+### Changed
+
+- **Stop store-check throttle default (`store_nudge_every` 1 → 4)**: the end-of-work nudge now
+  fires on every 4th real Stop instead of every turn (plan P1-1: every 3-5 turns, no per-turn
+  model continuation). The throttle runs before the per-session latch, so skipped Stops never
+  consume the one-shot latch; `store_nudge_every: 1` restores the old behaviour, `0` stays off.
+  Tests pin `1` in the per-request contract cases and add a default-throttle case (three silent
+  Stops, the fourth denies).
+
 ## 0.6.18 — 2026-11-03
 
 - `do_store` no longer writes an important record by itself. A direct call without a verified

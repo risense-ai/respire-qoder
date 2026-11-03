@@ -68,7 +68,7 @@ class ReceiptFlow(unittest.TestCase):
         self.env={k:v for k,v in os.environ.items() if k.upper() in {'PATH','SYSTEMROOT','SYSTEMDRIVE','WINDIR','PATHEXT','TEMP','TMP','COMSPEC'}}
         self.env.update(HOME=str(self.root/'home'),USERPROFILE=str(self.root/'home'),XDG_CONFIG_HOME=str(self.root/'config'),XDG_DATA_HOME=str(self.root/'data'),RESPITE_CONFIG=str(self.root/'config.json'),RESPITE_LOG=str(self.root/'log'),RESPITE_TURN_STATE=str(self.root/'turns'),RESPITE_NUDGE_STATE=str(self.root/'counter'),RESPITE_PENDING_NUDGE=str(self.root/'pending'),FIXTURE_ROOT=str(self.root),FIXTURE_HOOK=str(ROOT/'hooks/respire.py'),PYTHONUTF8='1',PYTHONDONTWRITEBYTECODE='1')
         for key in ('QODER_PLUGIN_DATA','KIMI_PLUGIN_DATA'):self.env[key]=str(self.root/'plugin-data')
-        (self.root/'config.json').write_text(json.dumps({'rsrs':str(self.engine),'skip_prefixes':['Recap:']}),encoding='utf-8')
+        (self.root/'config.json').write_text(json.dumps({'rsrs':str(self.engine),'skip_prefixes':['Recap:'],'store_nudge_every':1}),encoding='utf-8')
     def calls(self):
         path=self.root/'calls'
         return [json.loads(x) for x in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []

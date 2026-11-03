@@ -170,7 +170,9 @@ case "$(uname -s)" in
     ;;
 esac
 CFG_STUB="$TMP/config-stub.json"
-printf '{"session_rules": true, "rsrs": "%s"}' "$STUB_ENGINE" > "$CFG_STUB"
+# store_nudge_every pinned to 1: these cases assert the per-request nudge contract itself;
+# the shipped default throttle (every 4th Stop) has its own case further down (P1-1).
+printf '{"session_rules": true, "rsrs": "%s", "store_nudge_every": 1}' "$STUB_ENGINE" > "$CFG_STUB"
 
 # run_stub <event> <stdin-json> [STUB_MODE] [STUB_LIST] [session]
 run_stub() {
@@ -280,6 +282,21 @@ check "the next turn is not suppressed by the previous successful write (should 
 CFG_NUDGE0="$TMP/config-nudge0.json"
 echo '{"store_nudge_every": 0}' > "$CFG_NUDGE0"
 check "Stop throttle off is silent" "$(printf '%s' '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "selftest"}' | RESPITE_CONFIG="$CFG_NUDGE0" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TURNBASE" "$PY3" "$ROOT/hooks/respire.py" Stop)" "empty"
+# P1-1 default throttle: with no store_nudge_every in the config the shipped default (4) makes
+# the Stop nudge fire only on every 4th real Stop -- the first three are silent, the fourth
+# denies (the throttle runs before the latch, so skips never consume it).
+CFG_NUDGE_DEF="$TMP/config-nudgedefault.json"
+printf '{"session_rules": true, "rsrs": "%s"}' "$STUB_ENGINE" > "$CFG_NUDGE_DEF"
+reset_state
+nudge_default() {
+  printf '%s' "$STOP_JSON" | STUB_MODE=ok STUB_LIST=stale RESPITE_TEST_FAST=1 \
+    RESPITE_CONFIG="$CFG_NUDGE_DEF" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
+    RESPITE_TURN_STATE="$TURNBASE" "$PY3" "$ROOT/hooks/respire.py" Stop
+}
+check "default throttle: 1st Stop is silent" "$(nudge_default)" "empty"
+check "default throttle: 2nd Stop is silent" "$(nudge_default)" "empty"
+check "default throttle: 3rd Stop is silent" "$(nudge_default)" "empty"
+check "default throttle: 4th Stop nudges" "$(nudge_default)" 'has:"decision": "deny"'
 CFG_OFFE="$TMP/config-disabled.json"
 echo '{"enabled": false}' > "$CFG_OFFE"
 check "enabled=false silences everything" "$(run SessionStart "" "$CFG_OFFE")" "empty"
