@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-VERSION = "0.6.22"
+VERSION = "0.6.23"
 
 # Timeout windows (seconds): must cover the rsrs runtime cold start (doctor model load measured
 # at 7s+), otherwise the first turn is silent and only later turns work.
@@ -144,7 +144,10 @@ To register, run rsrs register on this machine — the user sets the login passw
 _REDACT = [
     (re.compile("(?i)(password|passwd|pwd|\u5bc6\u7801|\u53e3\u4ee4)\\s*[:=\uff1a]\\s*\\S+"),
      r"\1=[REDACTED]"),
-    (re.compile(r"\b(sk|ghp|gho|github_pat|AKIA|xox)[A-Za-z0-9_-]{8,}\b"), "[REDACTED]"),
+    # (?!skill): the audit field skill_template_gaps (and prompts mentioning "skill") must not
+    # match the sk-token rule -- sk + 8 word chars would otherwise redact a whole field name.
+    # Real sk- tokens carry a hyphen/underscore/digit after the prefix and still match.
+    (re.compile(r"\b(?!skill)(sk|ghp|gho|github_pat|AKIA|xox)[A-Za-z0-9_-]{8,}\b"), "[REDACTED]"),
     (re.compile(r"\b\d{11,19}\b"), "[NUM]"),
 ]
 

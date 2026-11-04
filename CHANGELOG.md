@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.23 — 2026-11-04
+
+### Fixed
+
+- **Token redaction false positive on `skill*` words**: the `sk|ghp|...` log-redaction rule
+  matched any word starting with `sk` plus 8 word chars, so the T1-2 audit field
+  `skill_template_gaps` (and prompts mentioning "skill") were logged as `[REDACTED]=619`.
+  The rule now carries a `(?!skill)` lookahead; real `sk-`/`ghp_` tokens still mask
+  (verified alongside the password and 11-19-digit rules). Live 0.6.22 verification caught it:
+  every `ev=consolidate` audit line lost that field.
+
 ## 0.6.22 — 2026-11-04
 
 ### Added

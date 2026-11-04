@@ -419,7 +419,13 @@ CONS_JSON='{"hook_event_name": "UserPromptSubmit", "prompt": "consolidate keywor
 OUT_CONS="$(run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" hit)"
 check "threshold counter fires the consolidate trigger" "$(grep -aq '"ev": "consolidate", "out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
 check "fire reason is threshold with counter numbers" "$(grep -aq 'reason=threshold count=40 thr=30' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
-check "fire runs a local audit and logs its counts" "$(grep -aq '"ev": "consolidate", "out": "audit"' "$TMP/hook.log" && grep -aq 'orphans=2' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+check "fire runs a local audit and logs its counts" "$(grep -aq '"ev": "consolidate", "out": "audit"' "$TMP/hook.log" && grep -aq 'orphans=2' "$TMP/hook.log" && grep -aq 'skill_template_gaps=3' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+check "redact keeps skill fields but still masks sk- tokens" "$("$PY3" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r","'"$ROOTM"'/hooks/respire.py"); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+keep = m.redact("skill_template_gaps=619 failing_skills=0") == "skill_template_gaps=619 failing_skills=0"
+mask = "[REDACTED]" in m.redact("key=sk-abcdef123456 and ghp_abcdefgh123456")
+print("OK" if keep and mask else "BAD")')" "has:OK"
 check "consolidate never injects a marker into the turn" "$OUT_CONS" "hasnt:respire · tidy"
 check "consolidate never injects a footer line" "$OUT_CONS" "hasnt:待巩固"
 check "a fire turn still delivers the recall block" "$OUT_CONS" "has:auto-recall"
