@@ -1,7 +1,7 @@
 {
   "name": "respire-qoder",
   "displayName": "respire Memory",
-  "version": "0.6.19",
+  "version": "0.6.20",
   "description": "respire-qoder adds a memory layer to Qoder. Before each answer the agent recalls existing records from the memory store; a prompt that starts with the store trigger is written to the store; at the end of a turn a store check reminds the agent to save what it just learned. Records are stored encrypted on the local machine. Run rsrs register on this machine to create an account; records then sync encrypted to the cloud, and rsrs login on another device picks them up under the same account. Without an account everything stays on this machine only. Works without a sidecar model. Feedback and contributions: https://github.com/risense-ai/respire-qoder (Issues / Pull requests).",
   "author": {
     "name": "risense-ai"
