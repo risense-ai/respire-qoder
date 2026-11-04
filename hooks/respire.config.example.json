@@ -8,6 +8,9 @@
   "budget_chars": 1500,
   "enabled": true,
   "due_check": true,
+  "consolidate_check": true,
+  "consolidate_check_hours": 24,
+  "consolidate_week_hours": 168,
   "skip_prefixes": [
     "\u4f60\u6b63\u5728\u4e3a Qoder \u4efb\u52a1\u76d1\u63a7\u7f16\u5199\u7b80\u77ed\u7684\u4f1a\u8bdd Recap",
     "\u4f60\u6b63\u5728\u4e3a Qoder",

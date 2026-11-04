@@ -77,9 +77,10 @@ print(json.dumps({'command':'recall','status':'ok','details':[
         self.config = self.case / 'config.json'
         # This sandbox allowlists exactly one subprocess per normal turn (the recall argv);
         # due_check is disabled here because its review --due call has dedicated coverage in
-        # test_hooks.sh, while this suite's contract is the strict single-call audit policy.
+        # test_hooks.sh, and consolidate_check likewise (its resort --status/audit calls are
+        # covered there) -- this suite's contract is the strict single-call audit policy.
         self.config.write_text(json.dumps({'rsrs': str(self.engine), 'session_rules': True,
-                                           'due_check': False}))
+                                           'due_check': False, 'consolidate_check': False}))
         self.launcher = self.case / 'launcher.py'
         self.launcher.write_text(LAUNCHER)
         self.env = {k: v for k, v in os.environ.items()
