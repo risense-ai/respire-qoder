@@ -93,7 +93,7 @@ print(json.dumps({'command':'recall','status':'ok','details':[
 
     def call(self, prompt):
         env = dict(self.env, TEST_EXPECTED_ARGV=json.dumps([
-            str(self.engine), 'recall', prompt, '--limit', '5', '--titles', '--json']))
+            str(self.engine), 'recall', prompt, '--limit', '20', '--titles', '--json']))
         result = subprocess.run([sys.executable, str(self.launcher)],
                                 input=json.dumps({'prompt': prompt}), text=True,
                                 encoding='utf-8', capture_output=True, env=env,

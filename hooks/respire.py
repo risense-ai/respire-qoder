@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-VERSION = "0.6.20"
+VERSION = "0.6.21"
 
 # Timeout windows (seconds): must cover the rsrs runtime cold start (doctor model load measured
 # at 7s+), otherwise the first turn is silent and only later turns work.
@@ -39,7 +39,9 @@ DEFAULTS = {
     "rsrs": "",                 # respire engine (rsrs) path; empty = auto-detect
     "recall_threshold": 0.0,    # recall floor, 0 = off by default (rsrs raw output): the built-in
                                 # skip gate handles irrelevance, limit caps volume, title tier is cheap
-    "recall_limit": 5,          # keep the first N hits
+    "recall_limit": 20,         # keep the first N hits (T0-1: A/B on 47 real queries showed
+                                # limit 20 stays inside the 1500-char budget with 0.965
+                                # coverage; limit 5 only kept 0.250)
     "min_prompt_chars": 2,      # skip retrieval for very short prompts (1 char is skipped,
                                 # 2 chars triggers; rsrs has its own skip gate, local 100-400ms)
     "defer_sentence": True,     # hybrid recall: sentence-shaped prompts are not queried with the
@@ -638,7 +640,17 @@ def do_recall(bin_path: str, prompt: str, cfg: dict) -> str:
                   f"max={max_score:.3f} thr={thr:g} q={prompt[:40]}", ms)
         return ""
     budget = int(cfg["budget_chars"])
-    lines, used = [], 90  # 90 reserved for the header line so trimming happens earlier
+    gate = f"threshold {thr:g}, " if thr > 0 else "rsrs direct, "
+
+    def head_for(count):
+        return (f"【respire · auto-recall】matched {count} item(s) ({gate}title tier; "
+                "read bodies on demand with rsrs show <short-id>; scores are relevance, not confidence):")
+
+    # Reserve the real header width: the old fixed 90 under-counted the ~140-char
+    # header, so renders could reach 1550 chars against a 1500 budget (T0-1 A/B
+    # caught it: 11/47 queries over). The header at recall_limit is an upper
+    # bound for any smaller match count ("matched N" never gets wider).
+    lines, used = [], len(head_for(max(1, int(cfg["recall_limit"]))))
     for score, d in keep:
         title = str(d.get("title") or "").strip() or "(untitled)"
         eid = str(d.get("id") or "")[:8]
@@ -651,11 +663,11 @@ def do_recall(bin_path: str, prompt: str, cfg: dict) -> str:
     if not lines:
         log_event(cfg, "recall", "budget_empty", "", ms)
         return ""
-    gate = f"threshold {thr:g}, " if thr > 0 else "rsrs direct, "
-    head = (f"【respire · auto-recall】matched {len(lines)} item(s) ({gate}title tier; "
-            "read bodies on demand with rsrs show <short-id>; scores are relevance, not confidence):")
-    log_event(cfg, "recall", "hit", f"n={len(lines)} max={max_score:.3f} q={prompt[:40]}", ms)
-    return "\n".join([head] + lines)
+    head = head_for(len(lines))
+    text = "\n".join([head] + lines)
+    log_event(cfg, "recall", "hit",
+              f"n={len(lines)} max={max_score:.3f} chars={len(text)} q={prompt[:40]}", ms)
+    return text
 
 
 def due_line(bin_path: str, cfg: dict) -> str:
@@ -1177,9 +1189,33 @@ def _show_guard_entry(engine, identifier: str, deadline: float) -> dict:
     return entry
 
 
+def _log_show(name: str, tool_input) -> None:
+    """T1-6: count read-backs in hook.log -- shell ``rsrs show`` and MCP ``memory_show``.
+
+    Counts only: no CLI call, no ids, no titles, so this path never touches the
+    credential guard and cannot leak content. A logging failure never affects
+    the tool call itself (log_event is already fail-open).
+    """
+    try:
+        if re.fullmatch(r"(?:mcp__.*__)?memory_show", name):
+            log_event(load_config(), "show", "mcp", "mcp memory_show")
+            return
+        if name not in SHELL_TOOLS:
+            return
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if not isinstance(command, str):
+            return
+        if (re.search(r"\brsrs(?:\.(?:exe|cmd|ps1))?\b", command, re.I)
+                and re.search(r"\bshow\b", command)):
+            log_event(load_config(), "show", "shell", "shell rsrs show")
+    except Exception:
+        return
+
+
 def on_pre_tool_use(data: dict):
     name = str(data.get("tool_name") or "").lower()
     tool_input = data.get("tool_input")
+    _log_show(name, tool_input)
     if name not in SHELL_TOOLS and not re.fullmatch(r"(?:mcp__.*__)?memory_(?:remember|update|attach)", name):
         return ""
     if name not in SHELL_TOOLS:

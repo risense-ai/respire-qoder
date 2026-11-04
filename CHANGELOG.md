@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.21 — 2026-11-04
+
+### Changed
+
+- **T0-1 recall count raised to 20**: `recall_limit` default 5 → 20 (hook `DEFAULTS`, example
+  config, README). Decision came from a live A/B replay of 47 real queries through the hook's
+  own `do_recall` (`scripts/ab_metrics.py ab`): limit 20 keeps 0.965 of the wide recall vs
+  0.250 at limit 5, with identical latency (avg 1973 ms vs 1996 ms, p95 2760 vs 2588 ms).
+- **Budget accounting fix**: `do_recall` reserved a fixed 90 chars for the header although the
+  real header is ~140 chars, so renders could reach 1550 chars against the 1500-char budget
+  (11/47 queries over before the fix). The reserve is now the header width at `recall_limit`
+  (an upper bound for any smaller match count), and the A/B re-run is 0/47 over budget at
+  every limit.
+
+### Added
+
+- **T1-6 A/B metrics tool**: `scripts/ab_metrics.py` with two modes -- `log` summarizes
+  `hook.log` JSONL (recall/due/store/stop/show events, injected chars, latency p95, shows per
+  turn) and `ab` replays a query batch through the hook's own renderer at several limits for
+  an acceptance table. 22 offline tests (`tests/test_ab_metrics.py`); the 口径 (metric
+  definitions) are documented in the module docstring and printed with every report --
+  adoption is never evidence that a record is factually true.
+- **Show counting**: `on_pre_tool_use` now logs `show` events (counts only -- no CLI call, no
+  ids, no titles) for shell `rsrs show` and MCP `memory_show`, so the T0-1 acceptance metric
+  "show次数不升反降或持平" is measurable from `hook.log`.
+- **Injected-chars telemetry**: recall `hit` log lines carry `chars=<len>` for the rendered
+  injection.
+
 ## 0.6.20 — 2026-11-04
 
 ### Added
