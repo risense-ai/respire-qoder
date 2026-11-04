@@ -1,7 +1,7 @@
 {
   "rsrs": "",
   "recall_threshold": 0.0,
-  "recall_limit": 5,
+  "recall_limit": 20,
   "min_prompt_chars": 2,
   "defer_sentence": true,
   "session_rules": true,

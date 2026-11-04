@@ -91,7 +91,7 @@ cp hooks/respire.config.example.json hooks/respire.config.json
 | --- | --- | --- |
 | `rsrs` | `""` | Engine path; empty = auto-detect (`RESPIRE_BIN` -> `respire`/`rsrs` on PATH -> `~/.local/bin` -> `~/.rsrs/bin`) |
 | `recall_threshold` | `0.0` | Recall floor; 0 = off by default (raw engine output), a positive value enables filtering |
-| `recall_limit` | `5` | Keep the first N hits |
+| `recall_limit` | `20` | Keep the first N hits (A/B-verified: 20 stays inside `budget_chars`, 5 kept only a quarter of the wide recall) |
 | `min_prompt_chars` | `2` | 1 char is skipped, 2 chars triggers a query |
 | `defer_sentence` | `true` | Hybrid recall: sentence-shaped prompts are not queried with the raw text; the hook injects a directive and the agent distills 3-5 keywords first. `false` restores query-with-raw-prompt for every prompt |
 | `session_rules` | `true` | Whether to inject the SessionStart rules; if you already wrote the full respire rules into `~/.qoder/rules` with `rsrs inject`, set `false` to avoid duplicate injection |
@@ -111,10 +111,28 @@ Filtering policy: no threshold by default. Noise is bounded in three places: the
 python3 scripts/validate_plugin.py
 python3 tests/test_credential_guard.py
 python3 -m unittest discover -s tests -p test_release.py -v
+python3 -m unittest discover -s tests -p test_ab_metrics.py -v
 bash tests/test_hooks.sh
 ```
 
-The first three need no real engine: the guard test uses temporary stubs, config and logs, forces a positive control proving ordinary input really recalls, then proves a credential triggers zero calls and that a dead stub must fail the positive control. CI runs these three on Linux, Windows and macOS. `test_hooks.sh` is the legacy real-engine suite and does not run in CI.
+The first four need no real engine: the guard test uses temporary stubs, config and logs, forces a positive control proving ordinary input really recalls, then proves a credential triggers zero calls and that a dead stub must fail the positive control. CI runs these four on Linux, Windows and macOS. `test_hooks.sh` is the legacy real-engine suite and does not run in CI.
+
+### A/B metrics (T1-6)
+
+`scripts/ab_metrics.py` measures the injection itself. Two modes, both read-only:
+
+```bash
+# Summarize the live hook.log trail: recall/due/store/stop/show counts,
+# injected chars, latency avg/p95, shows per turn.
+python3 scripts/ab_metrics.py log
+
+# Replay a query batch through the hook's own do_recall at several limits
+# and print the acceptance table (chars avg/max, over-budget count,
+# coverage vs wide recall, latency).
+python3 scripts/ab_metrics.py ab --max-queries 50 --queries-file batch.json
+```
+
+The batch source is `--queries-file` > the `rsrs query-log` envelope > `q=` fragments in `hook.log`. Every report ends with the 口径 footer: coverage = share of the wide (max-limit) recall kept by this render; good-hit = model self-grade usefulness, **never** evidence that a record is factually true. The module docstring carries the full metric definitions. The T0-1 default switch (5 → 20) was decided from this tool: 0/47 queries over the 1500-char budget after the header-reserve fix, 0.965 coverage, latency unchanged.
 
 ### GitHub Actions release
 

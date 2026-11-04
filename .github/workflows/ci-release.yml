@@ -42,6 +42,7 @@ jobs:
       - run: python tests/test_credential_guard.py
       - run: python -m unittest discover -s tests -p test_receipts.py -v
       - run: python -m unittest discover -s tests -p test_release.py -v
+      - run: python -m unittest discover -s tests -p test_ab_metrics.py -v
       - name: Behavior suite (stubbed engine)
         shell: bash
         run: bash tests/test_hooks.sh
