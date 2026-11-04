@@ -427,11 +427,13 @@ check "a fire turn still delivers the recall block" "$OUT_CONS" "has:auto-recall
 run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" "" >/dev/null
 check "zero counter skips (logged as zero, never fires)" "$(grep -aq '"ev": "consolidate", "out": "zero"' "$TMP/hook.log" && ! grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
 : > "$TMP/hook.log"
-"$PY3" -c "import json, time; json.dump({'last_check_ms': time.time() * 1000}, open('$TMP/consolidate.json', 'w'))"
+# Seed with bash printf, not python -c: native Windows python cannot open the inline MSYS
+# /tmp path (the hook's env-var path is converted for native children, inline code is not).
+printf '{"last_check_ms": %s000}' "$(date +%s)" > "$TMP/consolidate.json"
 run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" hit >/dev/null
-check "a fresh check timestamp throttles the counter call entirely" "$(grep -aq '\"ev\": \"consolidate\"' "$TMP/hook.log" && echo NO || echo YES)" "has:YES"
+check "a fresh check timestamp throttles the counter call entirely" "$(grep -aq '"ev": "consolidate"' "$TMP/hook.log" && echo NO || echo YES)" "has:YES"
 : > "$TMP/hook.log"
-"$PY3" -c "import json; json.dump({'last_check_ms': 0, 'last_fire_ms': 0}, open('$TMP/consolidate.json', 'w'))"
+printf '{"last_check_ms": 0, "last_fire_ms": 0}' > "$TMP/consolidate.json"
 run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" weekly >/dev/null
 check "weekly fallback fires for a nonzero sub-threshold counter" "$(grep -aq 'reason=weekly count=5 thr=30' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
 : > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
