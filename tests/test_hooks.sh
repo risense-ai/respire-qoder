@@ -154,6 +154,21 @@ elif sub == "recall":
         sys.exit(0)
     print(json.dumps({"command": "recall", "status": "ok",
                       "details": [{"id": "cccccccccccccccc", "title": "stub recall hit", "score": 0.9}]}))
+elif sub == "review":
+    # T1-1 due-check stub: STUB_DUE="" -> nothing due (existing tests stay footer-free),
+    # "hit" -> 3 due, "fail" -> fail envelope, "error" -> nonzero exit (all fail-open).
+    due = os.environ.get("STUB_DUE", "")
+    if due == "error":
+        sys.exit(1)
+    if due == "fail":
+        print(json.dumps({"command": "review", "status": "fail", "summary": {"saved": False},
+                          "items": [], "errors": ["stub decode review snapshot"],
+                          "details": {"code": "review_failed", "saved": False}}))
+        sys.exit(0)
+    n = 3 if due == "hit" else 0
+    print(json.dumps({"command": "review", "status": "ok",
+                      "summary": {"due_count": n, "saved": False}, "items": [],
+                      "details": {"due": [{"id": "a" * 16, "due_reasons": ["unverified"]}] * n}}))
 else:
     sys.exit(1)
 PYEOF
@@ -174,10 +189,11 @@ CFG_STUB="$TMP/config-stub.json"
 # the shipped default throttle (every 4th Stop) has its own case further down (P1-1).
 printf '{"session_rules": true, "rsrs": "%s", "store_nudge_every": 1}' "$STUB_ENGINE" > "$CFG_STUB"
 
-# run_stub <event> <stdin-json> [STUB_MODE] [STUB_LIST] [session]
+# run_stub <event> <stdin-json> [STUB_MODE] [STUB_LIST] [session] [STUB_DUE]
+# STUB_DUE (6th arg) drives the T1-1 review stub: "" (default) = nothing due, hit / fail / error.
 run_stub() {
-  local ev="$1" payload="$2" sm="${3:-ok}" sl="${4:-}" sess="${5:-selftest}"
-  printf '%s' "$payload" | STUB_MODE="$sm" STUB_LIST="$sl" RESPITE_TEST_FAST=1 \
+  local ev="$1" payload="$2" sm="${3:-ok}" sl="${4:-}" sess="${5:-selftest}" sd="${6:-}"
+  printf '%s' "$payload" | STUB_MODE="$sm" STUB_LIST="$sl" STUB_DUE="$sd" RESPITE_TEST_FAST=1 \
     RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
     RESPITE_TURN_STATE="$TURNBASE" "$PY3" "$ROOT/hooks/respire.py" "$ev"
 }
@@ -342,6 +358,25 @@ fi
 check "an irrelevant prompt injects nothing (engine skip gate, deterministic stub)" "$(run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "kitchen recipe banana bread", "session_id": "selftest"}' rec_skip)" "empty"
 check "a single-character prompt is skipped" "$(run UserPromptSubmit "k")" "empty"
 check "/nomem turns recall off" "$(run UserPromptSubmit "/nomem rsrs envelope structure")" "empty"
+# ---- T1-1 due-check: the footer appears only when review --due has items; every failure path
+# ---- and every non-real turn stays silent (counts only, never ids or titles) ----
+DUE_JSON='{"hook_event_name": "UserPromptSubmit", "prompt": "a normal keyword prompt for due testing", "session_id": "selftest"}'
+check "due footer appears when review reports due items" "$(run_stub UserPromptSubmit "$DUE_JSON" ok "" "" hit)" "has:【respire · due】3 条待复核"
+DUE_KW_JSON='{"hook_event_name": "UserPromptSubmit", "prompt": "due footer keyword probe fusion gate", "session_id": "selftest"}'
+check "due footer is the last injected line after the recall block" "$(run_stub UserPromptSubmit "$DUE_KW_JSON" ok "" "" hit | "$PY3" -c 'import sys
+lines = sys.stdin.read().rstrip("\n").split("\n")
+print("OK" if lines and lines[-1].startswith("【respire · due】") and any("auto-recall" in l for l in lines) else "BAD")')" "has:OK"
+run_stub UserPromptSubmit "$DUE_JSON" ok "" "" hit >/dev/null
+check "due hit is logged with its reason code" "$(grep -q '"ev": "due", "out": "hit"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+check "no due footer when nothing is due" "$(run_stub UserPromptSubmit "$DUE_JSON" ok)" "hasnt:【respire · due】"
+check "a failing review envelope fails open (no footer)" "$(run_stub UserPromptSubmit "$DUE_JSON" ok "" "" fail)" "hasnt:【respire · due】"
+check "a dead review process fails open (no footer)" "$(run_stub UserPromptSubmit "$DUE_JSON" ok "" "" error)" "hasnt:【respire · due】"
+check "/nomem turns stay due-free even when items are due" "$(run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "/nomem skip recall only", "session_id": "selftest"}' ok "" "" hit)" "hasnt:【respire · due】"
+check "store-prefix turns stay due-free even when items are due" "$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" ok "" "" hit)" "hasnt:【respire · due】"
+CFG_NODUE="$TMP/config-nodue.json"
+printf '{"session_rules": true, "rsrs": "%s", "due_check": false}' "$STUB_ENGINE" > "$CFG_NODUE"
+check "due_check=false silences the due-check" "$(printf '%s' "$DUE_JSON" | STUB_MODE=ok STUB_DUE=hit RESPITE_TEST_FAST=1 RESPITE_CONFIG="$CFG_NODUE" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TURNBASE" "$PY3" "$ROOT/hooks/respire.py" UserPromptSubmit)" "hasnt:【respire · due】"
+check "the example config documents due_check" "$(cat "$ROOT/hooks/respire.config.example.json")" "has:due_check"
 # ---- Suspected-credential guard: the credential value is assembled at run time (no complete
 # ---- literal in the source, so a pre-release static scan has no false positive); the engine stub
 # ---- logs every call.
@@ -397,6 +432,9 @@ SPY_PATH="$(cygpath -m "$SPY_RUN" 2>/dev/null || printf '%s' "$SPY_RUN")"
 CFG_SPY="$TMP/config-spy.json"
 echo '{"session_rules": true, "rsrs": "'"$SPY_PATH"'"}' > "$CFG_SPY"
 calls_n() { [ -f "$TMP/spy.log" ] && wc -l < "$TMP/spy.log" | tr -d '[:space:]' || echo 0; }
+# T1-1: review --due is a sanctioned per-turn call on real turns; the sentence/credential checks
+# below count engine calls EXCEPT review so the due-check can never mask a raw-prompt leak.
+calls_n_noreview() { [ -f "$TMP/spy.log" ] && grep -avE '^review( |$)' "$TMP/spy.log" | wc -l | tr -d '[:space:]' || echo 0; }
 
 # Positive control first (SKIP is not allowed): the same spy is called once for real with ordinary
 # input -- the stub really ran, the call was recorded and its valid JSON was injected; if the
@@ -413,11 +451,11 @@ check "positive control: the recall entry is the stub's canned one" "$spy_out" "
 check "positive control: the call is recorded as recall" "$(grep -aqE '^recall( |$)' "$TMP/spy.log" 2>/dev/null && echo YES || echo NO)" "has:YES"
 # Hybrid recall (defer_sentence): a sentence-shaped prompt must never reach the engine; the hook
 # injects the keyword-distillation directive instead and the agent compiles the keywords.
-N_SENT="$(calls_n)"
+N_SENT="$(calls_n_noreview)"
 sent_out="$(run UserPromptSubmit "$SENT_PROMPT" "$CFG_SPY")"
 check "a sentence-shaped prompt injects the keyword directive" "$sent_out" "has:recall pending"
 check "the directive tells the agent to distill keywords first" "$sent_out" "has:distill 3-5 keywords"
-check "a sentence-shaped prompt never queries the engine" "$( [ "$(calls_n)" = "$N_SENT" ] && echo SAME || echo CALLED )" "has:SAME"
+check "a sentence-shaped prompt never queries the engine (review excluded)" "$( [ "$(calls_n_noreview)" = "$N_SENT" ] && echo SAME || echo CALLED )" "has:SAME"
 check "the deferral is logged with its reason code" "$(grep -aq '"out": "defer_sentence"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
 check "a keyword-shaped prompt still recalls synchronously" "$(run UserPromptSubmit "$QUERY_RECALL" "$CFG_SPY")" "has:auto-recall"
 

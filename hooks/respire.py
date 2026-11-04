@@ -15,9 +15,10 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
-VERSION = "0.6.19"
+VERSION = "0.6.20"
 
 # Timeout windows (seconds): must cover the rsrs runtime cold start (doctor model load measured
 # at 7s+), otherwise the first turn is silent and only later turns work.
@@ -26,10 +27,12 @@ PROBE_T = 10
 STORE_T = 18
 LIST_T = 6    # window for Stop's "most recent store time" query (list measured ~0.9s warm)
 SHOW_T = 8    # post-write read-back (show) window; shrinks to the remaining hook budget
+DUE_T = 10    # T1-1 due-check window (review --due measured ~1.7s warm, ~2.6s via the npm shim)
+DUE_LIMIT = 100  # review --due page size; a full page is reported as "100+"
 LOG_MAX = 256 * 1024  # clear the whole hook.log once it exceeds this size
 
 if os.environ.get("RESPITE_TEST_FAST") == "1":   # test backdoor: collapse all timeouts to seconds
-    RECALL_T = PROBE_T = STORE_T = SHOW_T = 2
+    RECALL_T = PROBE_T = STORE_T = SHOW_T = DUE_T = 2
     LIST_T = 1
 
 DEFAULTS = {
@@ -50,6 +53,8 @@ DEFAULTS = {
     "store_nudge_every": 4,     # Stop store-check throttle: 1 = every turn, N = every Nth, 0 = off.
                                 # P1-1 default 4: the end-of-work nudge fires every 4th real Stop
                                 # instead of every turn (plan: every 3-5 turns, no per-turn model turn)
+    "due_check": True,          # T1-1: append "【respire · due】N 条待复核" when review --due has
+                                # items; one local CLI call per real turn, no model, fail-open
     "skip_prefixes": [          # prompts starting with these are host-internal: no recall, no store
         "\u4f60\u6b63\u5728\u4e3a Qoder \u4efb\u52a1\u76d1\u63a7\u7f16\u5199\u7b80\u77ed\u7684\u4f1a\u8bdd Recap",
         "\u4f60\u6b63\u5728\u4e3a Qoder",
@@ -653,6 +658,43 @@ def do_recall(bin_path: str, prompt: str, cfg: dict) -> str:
     return "\n".join([head] + lines)
 
 
+def due_line(bin_path: str, cfg: dict) -> str:
+    """T1-1 due-check: one local ``review --due --json`` call, returning the footer line or "".
+
+    Counts only -- never ids or titles. Fail-open on every error path (timeout, nonzero rc,
+    unparseable envelope, status != ok, empty page): a memory-layer fault must never block
+    or nag the turn. A full page (due_count == DUE_LIMIT) is reported as "N+" because the
+    true total may be larger.
+    """
+    t0 = time.time()
+    try:
+        r = run_rsrs(bin_path, ["review", "--due", "--json", "--limit", str(DUE_LIMIT)], DUE_T)
+    except Exception as e:
+        log_event(cfg, "due", "timeout_or_error", f"{type(e).__name__}", (time.time() - t0) * 1000)
+        return ""
+    ms = (time.time() - t0) * 1000
+    if r.returncode != 0:
+        log_event(cfg, "due", "rc_nonzero", f"rc={r.returncode}", ms)
+        return ""
+    try:
+        doc = json.loads(r.stdout)
+    except Exception:
+        log_event(cfg, "due", "parse_error", (r.stdout or "")[:80], ms)
+        return ""
+    if not isinstance(doc, dict) or doc.get("status") != "ok":
+        log_event(cfg, "due", "status_fail",
+                  str(doc.get("status") if isinstance(doc, dict) else "?"), ms)
+        return ""
+    summ = doc.get("summary") if isinstance(doc.get("summary"), dict) else {}
+    n = summ.get("due_count")
+    if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+        log_event(cfg, "due", "none", "", ms)
+        return ""
+    label = f"{n}+" if n >= DUE_LIMIT else str(n)
+    log_event(cfg, "due", "hit", f"n={label}", ms)
+    return f"【respire · due】{label} 条待复核"
+
+
 def probe_status(bin_path: str):
     """One SessionStart status call shared by all three states (login + store size + probe outcome;
     measured ~190ms warm). Returns (logged, total, probe_ok): logged True/False/None;
@@ -873,13 +915,33 @@ def on_prompt(data: dict, cfg: dict, engine) -> str:
     if not engine:
         log_event(cfg, "recall", "engine_missing", prompt[:40])
         return ""
+    # T1-1 due-check: started here so it runs alongside recall (or the defer path) instead of
+    # adding its ~1.7s to the turn; joined before either exit below. Only real keyword/sentence
+    # turns get here -- /nomem, internal prefixes, credentials, the store prefix and very short
+    # prompts return above and stay due-free.
+    due_box: list = []
+    due_th = None
+    if cfg.get("due_check", True):
+        due_th = threading.Thread(
+            target=lambda: due_box.append(due_line(engine, cfg)), daemon=True)
+        due_th.start()
+
+    def finish(text: str) -> str:
+        if due_th is None:
+            return text
+        due_th.join(DUE_T + 1)   # due_line has its own DUE_T subprocess window; the extra second
+        due = due_box[0] if due_box else ""   # covers interpreter overhead -- a late thread just
+        if not due:                           # means no footer (fail-open), never a hung hook
+            return text
+        return f"{text}\n{due}" if text else due
+
     query = SKILL_PREFIX.sub("", prompt).strip() or prompt  # strip the skill prefix so it cannot pollute the query
     if cfg.get("defer_sentence", True) and looks_like_sentence(query):
         # Hybrid recall: no model runs inside the hook, so a sentence is left to the agent, which
         # distils 3-5 keywords first (rule 1 + RECALL_PENDING) instead of querying raw text.
         log_event(cfg, "recall", "defer_sentence", query[:40])
-        return RECALL_PENDING
-    return do_recall(engine, query, cfg)
+        return finish(RECALL_PENDING)
+    return finish(do_recall(engine, query, cfg))
 
 
 SHELL_TOOLS = {"bash"}

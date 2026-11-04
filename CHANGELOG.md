@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.20 — 2026-11-04
+
+### Added
+
+- **Due-check injection (plan T1-1 / WP4-3)**: `UserPromptSubmit` runs one local
+  `rsrs review --due --json --limit 100` per real turn -- in parallel with recall, so it adds
+  no sequential latency -- and appends `【respire · due】N 条待复核` as the last injected line
+  when the store has due records (a full page is reported as `N+`). Counts only, never ids or
+  titles; no model call. Every failure path (timeout, nonzero rc, unparseable envelope,
+  `status != ok`, empty page) fails open to no footer, and a late thread never hangs the hook.
+  `/nomem`, host-internal prefixes, credential hits, store-prefix turns and very short prompts
+  return before the check and stay due-free; `due_check: false` disables it (documented in the
+  example config).
+  - Tests: stub `review` branch (`STUB_DUE=hit/fail/error`), footer presence / last-line /
+    log-reason checks, fail-open cases, nomem and store-prefix exclusion, config opt-out; the
+    credential-guard sandbox pins `due_check: false` to keep its strict single-call audit
+    policy (due-check itself is covered in `test_hooks.sh`).
+
 ## 0.6.19 — 2026-11-04
 
 ### Changed
