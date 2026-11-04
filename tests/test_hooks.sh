@@ -274,7 +274,11 @@ check "one-shot latch leaves a trail" "$(grep -q 'once_latch_skip' "$TMP/hook.lo
 reset_state
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "real question before internal recap", "session_id": "selftest"}' ok >/dev/null
 check "sequence: Stop nudges after the real request" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
-RECAP_OUT="$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$RECAP_TRIGGER. Return one JSON only\", \"session_id\": \"selftest\"}" ok)"
+# Payload hoisted into a variable: bash 3.2 (macOS /bin/bash) mis-parses \" escapes inside a
+# double-quoted "$( ... )" and shatters the call into extra words -- keep \" only in plain
+# double-quoted strings, never nested inside "..."$(...)"..." (DUE_JSON pattern).
+RECAP_JSON="{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$RECAP_TRIGGER. Return one JSON only\", \"session_id\": \"selftest\"}"
+RECAP_OUT="$(run_stub UserPromptSubmit "$RECAP_JSON" ok)"
 check "sequence: internal Recap is skipped with no output" "$RECAP_OUT" "empty"
 check "sequence: Stop does not deny again after the internal Recap (not re-armed)" "$(run_stub Stop "$STOP_JSON" ok stale)" "empty"
 reset_state
@@ -372,7 +376,8 @@ check "no due footer when nothing is due" "$(run_stub UserPromptSubmit "$DUE_JSO
 check "a failing review envelope fails open (no footer)" "$(run_stub UserPromptSubmit "$DUE_JSON" ok "" "" fail)" "hasnt:【respire · due】"
 check "a dead review process fails open (no footer)" "$(run_stub UserPromptSubmit "$DUE_JSON" ok "" "" error)" "hasnt:【respire · due】"
 check "/nomem turns stay due-free even when items are due" "$(run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "/nomem skip recall only", "session_id": "selftest"}' ok "" "" hit)" "hasnt:【respire · due】"
-check "store-prefix turns stay due-free even when items are due" "$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" ok "" "" hit)" "hasnt:【respire · due】"
+STORE_DUE_JSON="{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}"
+check "store-prefix turns stay due-free even when items are due" "$(run_stub UserPromptSubmit "$STORE_DUE_JSON" ok "" "" hit)" "hasnt:【respire · due】"
 CFG_NODUE="$TMP/config-nodue.json"
 printf '{"session_rules": true, "rsrs": "%s", "due_check": false}' "$STUB_ENGINE" > "$CFG_NODUE"
 check "due_check=false silences the due-check" "$(printf '%s' "$DUE_JSON" | STUB_MODE=ok STUB_DUE=hit RESPITE_TEST_FAST=1 RESPITE_CONFIG="$CFG_NODUE" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TURNBASE" "$PY3" "$ROOT/hooks/respire.py" UserPromptSubmit)" "hasnt:【respire · due】"
