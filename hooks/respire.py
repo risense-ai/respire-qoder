@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-VERSION = "0.6.21"
+VERSION = "0.6.22"
 
 # Timeout windows (seconds): must cover the rsrs runtime cold start (doctor model load measured
 # at 7s+), otherwise the first turn is silent and only later turns work.
@@ -29,10 +29,11 @@ LIST_T = 6    # window for Stop's "most recent store time" query (list measured 
 SHOW_T = 8    # post-write read-back (show) window; shrinks to the remaining hook budget
 DUE_T = 10    # T1-1 due-check window (review --due measured ~1.7s warm, ~2.6s via the npm shim)
 DUE_LIMIT = 100  # review --due page size; a full page is reported as "100+"
+CONSOLIDATE_T = 10  # T1-2 window per local call (resort --status ~0.1s, audit ~3.4s warm)
 LOG_MAX = 256 * 1024  # clear the whole hook.log once it exceeds this size
 
 if os.environ.get("RESPITE_TEST_FAST") == "1":   # test backdoor: collapse all timeouts to seconds
-    RECALL_T = PROBE_T = STORE_T = SHOW_T = DUE_T = 2
+    RECALL_T = PROBE_T = STORE_T = SHOW_T = DUE_T = CONSOLIDATE_T = 2
     LIST_T = 1
 
 DEFAULTS = {
@@ -57,6 +58,13 @@ DEFAULTS = {
                                 # instead of every turn (plan: every 3-5 turns, no per-turn model turn)
     "due_check": True,          # T1-1: append "【respire · due】N 条待复核" when review --due has
                                 # items; one local CLI call per real turn, no model, fail-open
+    "consolidate_check": True,  # T1-2 low-frequency consolidation trigger (local phase): consult
+                                # the tidy counter at most every consolidate_check_hours, fire on
+                                # >=threshold or weekly with a nonzero count, then run one local
+                                # audit and log its counts. Log-only: no model, no resort --go,
+                                # no injection (T1-7 quiet default), fail-open
+    "consolidate_check_hours": 24,   # minimum hours between resort --status counter checks
+    "consolidate_week_hours": 168,   # weekly fallback fire when the counter is nonzero; 0 = off
     "skip_prefixes": [          # prompts starting with these are host-internal: no recall, no store
         "\u4f60\u6b63\u5728\u4e3a Qoder \u4efb\u52a1\u76d1\u63a7\u7f16\u5199\u7b80\u77ed\u7684\u4f1a\u8bdd Recap",
         "\u4f60\u6b63\u5728\u4e3a Qoder",
@@ -707,6 +715,122 @@ def due_line(bin_path: str, cfg: dict) -> str:
     return f"【respire · due】{label} 条待复核"
 
 
+def _consolidate_state_path() -> str:
+    return (os.environ.get("RESPITE_CONSOLIDATE_STATE")
+            or os.path.join(data_dir(), "consolidate.json"))
+
+
+def _read_json_state(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+        return doc if isinstance(doc, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_json_state(path: str, state: dict) -> None:
+    """Atomic temp+rename. A failed write only means the next eligible turn re-checks."""
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def consolidate_step(bin_path: str, cfg: dict) -> None:
+    """T1-2 low-frequency consolidation trigger (local phase): log-only, model-free, fail-open.
+
+    A normal turn costs one state-file read -- the tidy counter subprocess runs at most
+    every ``consolidate_check_hours``. Fires when count >= the CLI threshold (cooldown one
+    check interval, so a stuck counter cannot audit every turn) or the weekly fallback
+    elapses with a nonzero count; count 0 always skips ("no new entries"). On fire it runs
+    one local ``rsrs audit --json`` and logs the structured problem counts -- never
+    ``resort --go``/``--spec`` (candidates belong to the later model phase, after the
+    two-week dry-run), never an injection (T1-7: default quiet), never a model call.
+    The CLI uses rc=2 for warn envelopes, so the envelope is parsed regardless of rc;
+    every failure path logs a reason code and returns.
+    """
+    if not cfg.get("consolidate_check", True):
+        return
+    try:
+        path = _consolidate_state_path()
+        state = _read_json_state(path)
+        now = time.time() * 1000
+        check_every = max(1, int(cfg.get("consolidate_check_hours", 24))) * 3600 * 1000
+        if now - float(state.get("last_check_ms", 0) or 0) < check_every:
+            return  # throttled: no subprocess, no log
+        # Stamp the check before the subprocess so a failing engine is re-consulted at most
+        # once per interval (fail toward quiet, never toward hammering).
+        state["last_check_ms"] = now
+        t0 = time.time()
+        try:
+            r = run_rsrs(bin_path, ["resort", "--status", "--json"], CONSOLIDATE_T)
+        except Exception as e:
+            log_event(cfg, "consolidate", "status_error", type(e).__name__,
+                      (time.time() - t0) * 1000)
+            _write_json_state(path, state)
+            return
+        ms = (time.time() - t0) * 1000
+        try:
+            doc = json.loads(r.stdout) if r.stdout else {}
+            summ = doc.get("summary") if isinstance(doc.get("summary"), dict) else {}
+            count = summ.get("count")
+            thr = summ.get("threshold")
+            if not isinstance(count, int) or isinstance(count, bool):
+                raise ValueError("count")
+            if not isinstance(thr, int) or isinstance(thr, bool) or thr <= 0:
+                thr = 30
+        except Exception:
+            log_event(cfg, "consolidate", "status_parse", (r.stdout or "")[:80], ms)
+            _write_json_state(path, state)
+            return
+        last_fire = float(state.get("last_fire_ms", 0) or 0)
+        week = max(0, int(cfg.get("consolidate_week_hours", 168))) * 3600 * 1000
+        reason = ""
+        if count <= 0:
+            log_event(cfg, "consolidate", "zero", "", ms)   # no new entries: skip
+        elif count >= thr and now - last_fire >= check_every:
+            reason = "threshold"
+        elif week > 0 and now - last_fire >= week:
+            reason = "weekly"
+        if not reason:
+            _write_json_state(path, state)
+            return
+        log_event(cfg, "consolidate", "fire", f"reason={reason} count={count} thr={thr}", ms)
+        t1 = time.time()
+        try:
+            ra = run_rsrs(bin_path, ["audit", "--json"], CONSOLIDATE_T)
+        except Exception as e:
+            log_event(cfg, "consolidate", "audit_error", type(e).__name__,
+                      (time.time() - t1) * 1000)
+            _write_json_state(path, state)
+            return
+        ams = (time.time() - t1) * 1000
+        try:
+            adoc = json.loads(ra.stdout) if ra.stdout else {}
+            asumm = adoc.get("summary") if isinstance(adoc.get("summary"), dict) else {}
+            fields = ("orphans", "invalid_importance", "same_title_groups",
+                      "truncated_titles", "max_depth", "hot_untyped",
+                      "skill_template_gaps", "total_active")
+            parts = [f"{k}={asumm[k]}" for k in fields
+                     if isinstance(asumm.get(k), int) and not isinstance(asumm.get(k), bool)]
+            if not parts:
+                raise ValueError("summary")
+        except Exception:
+            log_event(cfg, "consolidate", "audit_parse", (ra.stdout or "")[:80], ams)
+            _write_json_state(path, state)
+            return
+        log_event(cfg, "consolidate", "audit", " ".join(parts), ams)
+        state["last_fire_ms"] = now
+        state["last_count"] = count
+        _write_json_state(path, state)
+    except Exception as e:
+        log_event(cfg, "consolidate", "error", type(e).__name__)
+
+
 def probe_status(bin_path: str):
     """One SessionStart status call shared by all three states (login + store size + probe outcome;
     measured ~190ms warm). Returns (logged, total, probe_ok): logged True/False/None;
@@ -927,15 +1051,19 @@ def on_prompt(data: dict, cfg: dict, engine) -> str:
     if not engine:
         log_event(cfg, "recall", "engine_missing", prompt[:40])
         return ""
-    # T1-1 due-check: started here so it runs alongside recall (or the defer path) instead of
-    # adding its ~1.7s to the turn; joined before either exit below. Only real keyword/sentence
-    # turns get here -- /nomem, internal prefixes, credentials, the store prefix and very short
-    # prompts return above and stay due-free.
+    # T1-1 due-check + T1-2 consolidate trigger: one shared thread started here so both run
+    # alongside recall (or the defer path) instead of adding their ~2s/~5s to the turn; joined
+    # before either exit below. The due line is appended FIRST so a slow audit can never lose
+    # the footer -- finish() may time out of the join and still read an already-written line.
+    # Only real keyword/sentence turns get here -- /nomem, internal prefixes, credentials, the
+    # store prefix and very short prompts return above and stay due-free and consolidation-free.
     due_box: list = []
     due_th = None
-    if cfg.get("due_check", True):
-        due_th = threading.Thread(
-            target=lambda: due_box.append(due_line(engine, cfg)), daemon=True)
+    if cfg.get("due_check", True) or cfg.get("consolidate_check", True):
+        def _maintenance() -> None:
+            due_box.append(due_line(engine, cfg) if cfg.get("due_check", True) else "")
+            consolidate_step(engine, cfg)
+        due_th = threading.Thread(target=_maintenance, daemon=True)
         due_th.start()
 
     def finish(text: str) -> str:

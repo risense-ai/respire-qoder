@@ -59,7 +59,7 @@ echo '{"session_rules": false}' > "$CFG_OFF"
 # path but leaves env values alone.
 run() {
   local ev="$1" pr="${2-}" cfg="${3:-$CFG_ON}" sess="${4:-selftest}"
-  PROMPT_VAL="$pr" "$PY3" - "$ev" "$sess" <<'PY' | PROMPT_VAL="$pr" RESPITE_CONFIG="$cfg" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TURNBASE" "$PY3" "$ROOT/hooks/respire.py" "$ev"
+  PROMPT_VAL="$pr" "$PY3" - "$ev" "$sess" <<'PY' | PROMPT_VAL="$pr" RESPITE_CONFIG="$cfg" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" "$ev"
 import json, os, sys
 ev, sess = sys.argv[1], sys.argv[2]
 pr = os.environ.get("PROMPT_VAL", "")
@@ -169,6 +169,31 @@ elif sub == "review":
     print(json.dumps({"command": "review", "status": "ok",
                       "summary": {"due_count": n, "saved": False}, "items": [],
                       "details": {"due": [{"id": "a" * 16, "due_reasons": ["unverified"]}] * n}}))
+elif sub == "resort":
+    # T1-2 consolidate trigger stub: "" -> counter 0 (skip), "hit"/"audit_error" -> above
+    # threshold (the latter fails only at the audit step), "weekly" -> nonzero below
+    # threshold, "error" -> nonzero rc (fail-open).
+    tidy = os.environ.get("STUB_TIDY", "")
+    if tidy == "error":
+        sys.exit(1)
+    if tidy in ("hit", "audit_error"):
+        count = int(os.environ.get("STUB_TIDY_COUNT", "40"))
+    elif tidy == "weekly":
+        count = int(os.environ.get("STUB_TIDY_COUNT", "5"))
+    else:
+        count = int(os.environ.get("STUB_TIDY_COUNT", "0"))
+    thr = int(os.environ.get("STUB_TIDY_THR", "30"))
+    print(json.dumps({"command": "resort", "status": "warn" if count >= thr else "ok",
+                      "summary": {"count": count, "threshold": thr}}))
+elif sub == "audit":
+    # T1-2 fire-time audit stub: "audit_error" -> nonzero rc after a successful fire.
+    if os.environ.get("STUB_TIDY", "") == "audit_error":
+        sys.exit(1)
+    print(json.dumps({"command": "audit", "status": "ok",
+                      "summary": {"orphans": 2, "invalid_importance": 0,
+                                  "same_title_groups": 1, "truncated_titles": 0,
+                                  "max_depth": 7, "hot_untyped": 5,
+                                  "skill_template_gaps": 3, "total_active": 111}}))
 else:
     sys.exit(1)
 PYEOF
@@ -189,16 +214,20 @@ CFG_STUB="$TMP/config-stub.json"
 # the shipped default throttle (every 4th Stop) has its own case further down (P1-1).
 printf '{"session_rules": true, "rsrs": "%s", "store_nudge_every": 1}' "$STUB_ENGINE" > "$CFG_STUB"
 
-# run_stub <event> <stdin-json> [STUB_MODE] [STUB_LIST] [session] [STUB_DUE]
+# run_stub <event> <stdin-json> [STUB_MODE] [STUB_LIST] [session] [STUB_DUE] [STUB_TIDY]
 # STUB_DUE (6th arg) drives the T1-1 review stub: "" (default) = nothing due, hit / fail / error.
+# STUB_TIDY (7th arg) drives the T1-2 resort/audit stub: "" (default) = tidy counter 0 (nothing
+# to consolidate), "hit" = counter above threshold (STUB_TIDY_COUNT/THR override the numbers),
+# "weekly" = nonzero counter below threshold, "error" = nonzero rc, "audit_error" = fire then
+# the audit call fails.
 run_stub() {
-  local ev="$1" payload="$2" sm="${3:-ok}" sl="${4:-}" sess="${5:-selftest}" sd="${6:-}"
-  printf '%s' "$payload" | STUB_MODE="$sm" STUB_LIST="$sl" STUB_DUE="$sd" RESPITE_TEST_FAST=1 \
+  local ev="$1" payload="$2" sm="${3:-ok}" sl="${4:-}" sess="${5:-selftest}" sd="${6:-}" st="${7:-}"
+  printf '%s' "$payload" | STUB_MODE="$sm" STUB_LIST="$sl" STUB_DUE="$sd" STUB_TIDY="$st" RESPITE_TEST_FAST=1 \
     RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
-    RESPITE_TURN_STATE="$TURNBASE" "$PY3" "$ROOT/hooks/respire.py" "$ev"
+    RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" "$ev"
 }
 STOP_JSON='{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "selftest"}'
-reset_state() { rm -rf "$TMP/turnstate" "$TMP/nudge"; }
+reset_state() { rm -rf "$TMP/turnstate" "$TMP/nudge" "$TMP/consolidate.json"; }
 
 # ---- Explicit prefixes stay pending; legacy receipt helper coverage is in test_receipts.py. ----
 FACT="fixed stub fact sentence one."
@@ -380,8 +409,51 @@ STORE_DUE_JSON="{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE
 check "store-prefix turns stay due-free even when items are due" "$(run_stub UserPromptSubmit "$STORE_DUE_JSON" ok "" "" hit)" "hasnt:【respire · due】"
 CFG_NODUE="$TMP/config-nodue.json"
 printf '{"session_rules": true, "rsrs": "%s", "due_check": false}' "$STUB_ENGINE" > "$CFG_NODUE"
-check "due_check=false silences the due-check" "$(printf '%s' "$DUE_JSON" | STUB_MODE=ok STUB_DUE=hit RESPITE_TEST_FAST=1 RESPITE_CONFIG="$CFG_NODUE" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TURNBASE" "$PY3" "$ROOT/hooks/respire.py" UserPromptSubmit)" "hasnt:【respire · due】"
+check "due_check=false silences the due-check" "$(printf '%s' "$DUE_JSON" | STUB_MODE=ok STUB_DUE=hit RESPITE_TEST_FAST=1 RESPITE_CONFIG="$CFG_NODUE" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" UserPromptSubmit)" "hasnt:【respire · due】"
 check "the example config documents due_check" "$(cat "$ROOT/hooks/respire.config.example.json")" "has:due_check"
+# ---- T1-2 low-frequency consolidation trigger (local phase): log-only and model-free --
+# ---- it never injects, the throttle/cooldown live in a state file, every failure path
+# ---- stays quiet, and /nomem, store-prefix and disabled-config turns never consult it ----
+CONS_JSON='{"hook_event_name": "UserPromptSubmit", "prompt": "consolidate keywords probe turn", "session_id": "selftest"}'
+: > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
+OUT_CONS="$(run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" hit)"
+check "threshold counter fires the consolidate trigger" "$(grep -aq '"ev": "consolidate", "out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+check "fire reason is threshold with counter numbers" "$(grep -aq 'reason=threshold count=40 thr=30' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+check "fire runs a local audit and logs its counts" "$(grep -aq '"ev": "consolidate", "out": "audit"' "$TMP/hook.log" && grep -aq 'orphans=2' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+check "consolidate never injects a marker into the turn" "$OUT_CONS" "hasnt:respire · tidy"
+check "consolidate never injects a footer line" "$OUT_CONS" "hasnt:待巩固"
+check "a fire turn still delivers the recall block" "$OUT_CONS" "has:auto-recall"
+: > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
+run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" "" >/dev/null
+check "zero counter skips (logged as zero, never fires)" "$(grep -aq '"ev": "consolidate", "out": "zero"' "$TMP/hook.log" && ! grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+: > "$TMP/hook.log"
+# Seed with bash printf, not python -c: native Windows python cannot open the inline MSYS
+# /tmp path (the hook's env-var path is converted for native children, inline code is not).
+printf '{"last_check_ms": %s000}' "$(date +%s)" > "$TMP/consolidate.json"
+run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" hit >/dev/null
+check "a fresh check timestamp throttles the counter call entirely" "$(grep -aq '"ev": "consolidate"' "$TMP/hook.log" && echo NO || echo YES)" "has:YES"
+: > "$TMP/hook.log"
+printf '{"last_check_ms": 0, "last_fire_ms": 0}' > "$TMP/consolidate.json"
+run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" weekly >/dev/null
+check "weekly fallback fires for a nonzero sub-threshold counter" "$(grep -aq 'reason=weekly count=5 thr=30' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+: > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
+run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" error >/dev/null
+check "a dead resort process fails open (no fire)" "$(grep -aq '"out": "status_' "$TMP/hook.log" && ! grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+: > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
+OUT_AUD="$(run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" audit_error)"
+check "fire is logged even when the audit call fails" "$(grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+check "a failed audit logs its reason code, not counts" "$(grep -aq '"out": "audit_parse"' "$TMP/hook.log" && ! grep -aq '"out": "audit"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+check "a failed audit still injects nothing" "$OUT_AUD" "hasnt:respire · tidy"
+: > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
+run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "/nomem skip consolidate too", "session_id": "selftest"}' ok "" selftest "" hit >/dev/null
+run_stub UserPromptSubmit "$STORE_DUE_JSON" ok "" selftest "" hit >/dev/null
+check "/nomem and store-prefix turns never consult the counter" "$(grep -aq '"ev": "consolidate"' "$TMP/hook.log" && echo NO || echo YES)" "has:YES"
+CFG_NOCONS="$TMP/config-nocons.json"
+printf '{"session_rules": true, "rsrs": "%s", "consolidate_check": false}' "$STUB_ENGINE" > "$CFG_NOCONS"
+: > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
+printf '%s' "$CONS_JSON" | STUB_MODE=ok STUB_TIDY=hit RESPITE_TEST_FAST=1 RESPITE_CONFIG="$CFG_NOCONS" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" UserPromptSubmit >/dev/null
+check "consolidate_check=false silences the trigger" "$(grep -aq '"ev": "consolidate"' "$TMP/hook.log" && echo NO || echo YES)" "has:YES"
+check "the example config documents consolidate_check" "$(cat "$ROOT/hooks/respire.config.example.json")" "has:consolidate_check"
 # ---- Suspected-credential guard: the credential value is assembled at run time (no complete
 # ---- literal in the source, so a pre-release static scan has no false positive); the engine stub
 # ---- logs every call.
@@ -437,9 +509,10 @@ SPY_PATH="$(cygpath -m "$SPY_RUN" 2>/dev/null || printf '%s' "$SPY_RUN")"
 CFG_SPY="$TMP/config-spy.json"
 echo '{"session_rules": true, "rsrs": "'"$SPY_PATH"'"}' > "$CFG_SPY"
 calls_n() { [ -f "$TMP/spy.log" ] && wc -l < "$TMP/spy.log" | tr -d '[:space:]' || echo 0; }
-# T1-1: review --due is a sanctioned per-turn call on real turns; the sentence/credential checks
-# below count engine calls EXCEPT review so the due-check can never mask a raw-prompt leak.
-calls_n_noreview() { [ -f "$TMP/spy.log" ] && grep -avE '^review( |$)' "$TMP/spy.log" | wc -l | tr -d '[:space:]' || echo 0; }
+# T1-1/T1-2: review --due and the resort/audit consolidate check are sanctioned local per-turn
+# calls on real turns; the sentence/credential checks below count engine calls EXCEPT those so
+# a raw-prompt leak can never be masked by maintenance.
+calls_n_noreview() { [ -f "$TMP/spy.log" ] && grep -avE '^(review|resort|audit)( |$)' "$TMP/spy.log" | wc -l | tr -d '[:space:]' || echo 0; }
 
 # Positive control first (SKIP is not allowed): the same spy is called once for real with ordinary
 # input -- the stub really ran, the call was recorded and its valid JSON was injected; if the

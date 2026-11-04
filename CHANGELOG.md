@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.22 — 2026-11-04
+
+### Added
+
+- **T1-2 low-frequency consolidation trigger (local phase)**: `UserPromptSubmit` consults the
+  tidy counter (`rsrs resort --status --json`) at most every `consolidate_check_hours`
+  (default 24) from a persistent state file, so a normal turn costs one file read and no
+  subprocess. Fires when the counter reaches the CLI threshold (cooldown one check interval)
+  or the weekly fallback (`consolidate_week_hours`, default 168) elapses with a nonzero
+  count; a zero counter always skips. On fire it runs one local `rsrs audit --json` and logs
+  the structured problem counts (`ev=consolidate` reason codes in `hook.log`).
+  - **Log-only by design**: no model call, never `resort --go`/`--spec` (candidates belong to
+    the later model phase after the two-week dry-run), no injection (T1-7 quiet default),
+    fail-open on every error path. The CLI uses rc=2 for warn envelopes, so the envelope is
+    parsed regardless of rc.
+  - Config: `consolidate_check` (master), `consolidate_check_hours`, `consolidate_week_hours`;
+    documented in the example config. The credential-guard sandbox pins
+    `consolidate_check: false` to keep its strict single-call audit policy (coverage lives in
+    `test_hooks.sh`: threshold/weekly fires, zero skip, throttle, dead process, failed audit,
+    /nomem and store-prefix exclusion, config opt-out).
+
 ## 0.6.21 — 2026-11-04
 
 ### Changed
