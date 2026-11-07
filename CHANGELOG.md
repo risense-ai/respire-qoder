@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.6.24 — 2026-11-04
+
+### Added
+
+- **T1-4 selfNote generation (DEFAULT OFF)**: a bounded, host-validated persona-note
+  pipeline. When `selfnote` is enabled, one due Stop (every `selfnote_every_sessions`
+  sessions **or** `selfnote_every_hours`, hard-floored by `selfnote_min_hours` so it can
+  never run per turn) gathers evidence locally -- one `list` (recent important records,
+  previous live selfNote) plus one `recall --titles` to obtain each candidate's
+  `record_revision` -- and emits a single fixed generation directive as the Stop deny:
+  the agent rewrites the note in one bounded model turn and writes it with exactly one
+  literal `rsrs remember --type self --importance important --supersedes ...` command.
+  - **The hook is the host validator**: `PreToolUse` parses every `--type self` write
+    strictly and denies anything outside the contract -- content over
+    `selfnote_max_chars` (1,200), managed-marker or secret content, `source_refs` not in
+    the issued whitelist or with a mismatched `revision`, a missing/wrong `supersedes`,
+    a malformed `valid_until`, an over-long summary, duplicates or >=0.72 rephrases of
+    the previous version, and any bypass/unknown/duplicate option. A passing write is
+    one-shot consumed only after the whole command verifies; `--type self` is the only
+    creation exempt from the parent requirement (the CLI accepts a parentless selfNote).
+  - **Dry-run by default**: `selfnote_dry_run` is true, so generation may write but
+    `SessionStart` never injects (plan: four-week write-only dry-run). Injection
+    (`selfnote_inject`, additionally required) renders ONE managed block
+    `<!-- respire:selfnote:start -->...<!-- respire:selfnote:end -->` with the note head
+    capped at `selfnote_inject_chars` (300), prepended before the rules -- replace, never
+    append-after.
+  - Config: `selfnote`, `selfnote_dry_run`, `selfnote_inject`, `selfnote_every_sessions`,
+    `selfnote_every_hours`, `selfnote_min_hours`, `selfnote_evidence_limit`,
+    `selfnote_max_chars`, `selfnote_inject_chars`, `selfnote_project` (documented in the
+    example config; all defaults keep the feature inert). State lives in
+    `selfnote.json` (`RESPITE_SELFNOTE_STATE` overrides), one file read per Stop while
+    enabled and zero subprocesses while disabled. Log events: `ev=selfnote`
+    outcomes `init/floor_skip/fire/no_recent/no_citable/fail/error/guard_deny/guard_ok/
+    inject/inject_skip`.
+  - Tests: `tests/test_selfnote.py`, 46 offline cases covering cadence (init, floor,
+    weekly vs session due, window burned on engine fault), the evidence whitelist
+    (recency order, supersede/window/importance filters, revision intersection, cap),
+    every validator rule, the parent exemption, the PreToolUse allow/deny/consume flow
+    and injection gating.
+
 ## 0.6.23 — 2026-11-04
 
 ### Fixed
