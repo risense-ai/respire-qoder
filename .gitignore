@@ -13,3 +13,6 @@ release-out/
 turn_map.json
 # 0.6.11 per-session state files (st_<sid>.json; turn_map.json is the legacy leftover)
 st_*.json
+# 0.6.25 consolidation / selfNote runtime state files (untracked noise when data_dir falls back)
+consolidate.json
+selfnote.json

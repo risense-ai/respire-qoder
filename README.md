@@ -4,9 +4,9 @@
 
 Website: <https://rsrs.rs> · Repo: <https://github.com/risense-ai/respire-qoder> · Feedback: [Issues](https://github.com/risense-ai/respire-qoder/issues) · Contribute: [Pull requests](https://github.com/risense-ai/respire-qoder/pulls)
 
-`respire-qoder` uses Qoder's plugin hooks to wire the [respire engine (CLI name rsrs)](https://www.npmjs.com/package/rsrs-cli) into the agent loop: before each answer it recalls existing records from the memory store, a prompt that starts with the store trigger is written, and at the end of a turn a store check reminds the agent to save what it just learned. **Registering and enabling cloud sync is recommended**: run `rsrs register` on this machine to create an account; records sync encrypted to the cloud and `rsrs login` on another device picks them up under the same account. It also works without registering, but records then live only on this machine, and losing the device loses the records.
+`respire-qoder` uses Qoder's plugin hooks to wire [respire](https://www.npmjs.com/package/rsrs-cli) into the agent loop: in respire 2.x the CLI (`rsrs`, package `rsrs-cli`) is a thin client and the capabilities live in a separate local runtime process (package `rsrs-runtime`) that the client talks to over loopback HTTP, so the plugin's commands need that runtime to be running. Before each answer it recalls existing records from the memory store, a prompt that starts with the store trigger is written, and at the end of a turn a store check reminds the agent to save what it just learned. **Registering and enabling cloud sync is recommended**: run `rsrs register` on this machine to create an account; records sync encrypted to the cloud and `rsrs login` on another device picks them up under the same account. It also works without registering, but records then live only on this machine, and losing the device loses the records.
 
-The plugin contains no engine and no custom install script; when the engine is missing it hands the install command to the agent to run inside the session.
+The plugin ships no CLI, no runtime and no custom install script; when they are missing it hands the install command to the agent to run inside the session. Installing the CLI binary alone does not make recall usable -- the runtime it forwards to must also be running.
 
 ## Data storage safety
 
@@ -17,8 +17,8 @@ The plugin contains no engine and no custom install script; when the engine is m
 
 ## Works without a model
 
-- Registration, login, sync and recall do not depend on an on-device model. Without one, the engine recalls by literal text matching and remains fully usable.
-- The BGE-M3 model (~1.1GB) is an optional install: with it, recall matches semantically and works better. Run `rsrs model install && rsrs model activate m3`; without it the plugin hints once and normal use is unaffected.
+- Registration, login, sync and recall do not depend on an on-device model. Without one, recall falls back to literal text matching and remains fully usable.
+- The BGE-M3 model (~1.1GB) is an optional install: with it, recall matches semantically and works better. Run `rsrs model install && rsrs model activate m3`; 2.x also offers `rsrs model switch m3` (prepare + probe + rebuild in one atomic activation), `rsrs model catalog`, `rsrs model probe` and `rsrs model engine` for managing it. Without the model the plugin hints once and normal use is unaffected.
 
 ## Install
 
@@ -39,7 +39,7 @@ qoder plugins install respire-qoder@risense
 
 After installing, run `/plugins reload` in the session or restart the session. Qoder Desktop can also install from a local directory in plugin settings; the desktop app and the CLI share the same plugin directory and manifest.
 
-### 2. The engine (the agent can install it when missing)
+### 2. The CLI and runtime (the agent can install them when missing)
 
 ```bash
 npm i -g rsrs-cli@latest
@@ -53,7 +53,9 @@ npm config set prefix ~/.npm-global
 npm i -g rsrs-cli@latest
 ```
 
-The plugin probes for the engine every turn; once installed, recall and explicit stores resume within the same session.
+The first run of the CLI downloads and starts the matching local runtime on its own. Confirm both parts before relying on recall: `rsrs --version` for the CLI, then `rsrs runtime status` (running=true means ready). If recall fails with a `runtime_error`, run `rsrs runtime start` from a host terminal -- a sandboxed client-only session cannot start it -- and re-check `rsrs runtime status`.
+
+The plugin probes for the CLI every turn; once it is installed, recall and explicit stores resume within the same session -- provided the local runtime is also up, since `rsrs` commands forward to it over loopback HTTP.
 
 ### 3. Register and enable cloud sync (recommended, first run)
 
@@ -94,7 +96,7 @@ cp hooks/respire.config.example.json hooks/respire.config.json
 | `recall_limit` | `20` | Keep the first N hits (A/B-verified: 20 stays inside `budget_chars`, 5 kept only a quarter of the wide recall) |
 | `min_prompt_chars` | `2` | 1 char is skipped, 2 chars triggers a query |
 | `defer_sentence` | `true` | Hybrid recall: sentence-shaped prompts are not queried with the raw text; the hook injects a directive and the agent distills 3-5 keywords first. `false` restores query-with-raw-prompt for every prompt |
-| `session_rules` | `true` | Whether to inject the SessionStart rules; if you already wrote the full respire rules into `~/.qoder/rules` with `rsrs inject`, set `false` to avoid duplicate injection |
+| `session_rules` | `true` | Whether to inject the SessionStart rules; Qoder has no `rsrs inject` target, so this hook is the only rules source. If you already wrote the full respire rules into `~/AGENTS.md` with `rsrs inject --id generic`, set `false` to avoid duplicate injection |
 | `budget_chars` | `1500` | Total injection budget per turn |
 | `enabled` | `true` | Master switch: false = everything silent |
 | `store_nudge_every` | `4` | Stop throttle: N = every Nth Stop (default 4, so at most one nudge per ~4 requests), 1 = every turn, 0 = off |
@@ -116,7 +118,7 @@ cp hooks/respire.config.example.json hooks/respire.config.json
 
 Other environment variables: `RESPIRE_BIN` (engine path), `RESPITE_RSRS` (legacy name), `RESPITE_LOG`, `RESPITE_NUDGE_STATE`, `RESPITE_TURN_STATE` (latch/receipt state directory), `RESPITE_HOOK_BUDGET_S` (shared write-chain deadline, default 20s).
 
-Filtering policy: no threshold by default. Noise is bounded in three places: the engine skip gate, limit 5, and title-only injection. Missing a genuinely relevant record costs more, so showing two extra title lines is preferred.
+Filtering policy: no threshold by default. Noise is bounded in three places: the engine skip gate, limit 20, and title-only injection. Missing a genuinely relevant record costs more, so showing two extra title lines is preferred.
 
 ## Verification
 
@@ -182,7 +184,7 @@ bash tests/test_hooks.sh --store
 
 ## Known limits
 
-- **The first recall is slow**: the first recall after a session starts must boot the engine runtime (and load the semantic model if installed), measured at about 7 seconds. The plugin sets generous timeouts for that (recall 14s, probe 10s, 20s per hook in total) and injects diagnostics at the start of the session when the boot fails. Once the engine is resident, later recalls usually return in well under a second.
+- **The first recall is slow**: the first recall after a session starts pays for the runtime connection (and loading the semantic model if installed), measured at about 7 seconds. The runtime is a separate local binary the CLI downloads automatically on its first run; `rsrs runtime status` tells you whether it is up (running=true). The plugin sets generous timeouts for that (recall 14s, probe 10s, 20s per hook in total) and injects diagnostics at the start of the session when the boot fails. Once the runtime is resident, later recalls usually return in well under a second.
 
 ## Feedback and contributions
 
@@ -201,7 +203,7 @@ Real shell redirections are removed before identifying the executable and subcom
 
 Before visible Bash calls, the hook parses literal rsrs remember/update/attach arguments and every command in a sequence. It rejects force bypasses, important creation without a parent, explicit empty or invalid parents, and identified dynamic or wrapped memory writes. Use one explicit literal command when parsing is refused. Non-memory commands and read-only calls remain silent.
 
-A non-empty parent must be an ID that an existing runner can verify with `rsrs --client-only show <id> --json`. Verification has a 16-second total budget inside the 20-second hook timeout; missing runners, errors, malformed receipts and timeouts deny the write and leave placement pending. No runtime is started and the hook never writes memory. Denials contain only static English guidance and exit 0, so the Python fallback cannot swallow them. Automatic guidance still honors the enabled switch; this placement guard remains active while the hook component is installed.
+A non-empty parent must be an ID that an existing runner can verify with `rsrs --client-only show <id> --json`. Verification has a 16-second total budget inside the 20-second hook timeout; missing runners, errors, malformed receipts and timeouts deny the write and leave placement pending. `--client-only` only connects to the host's already-running loopback runtime; it never starts or stops one, and the hook never writes memory. Denials contain only static English guidance and exit 0, so the Python fallback cannot swallow them. Automatic guidance still honors the enabled switch; this placement guard remains active while the hook component is installed.
 
 Host-visible `memory_remember`, `memory_update` and `memory_attach` MCP names, including `mcp__<server>__memory_*`, are denied because the hook cannot bind an arbitrary MCP server to the local target profile. Use an explicit rsrs command through the guarded shell instead. This is not a general shell sandbox: aliases, arbitrary external scripts, hidden API calls and tools that do not emit PreToolUse remain outside its visibility. A verified parent exists; the model must still read its full body and judge relevance before writing. Actual model termination and installation behavior require host verification.
 
