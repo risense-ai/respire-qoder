@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.25 — 2026-11-17
+
+### Added
+
+- **2.x runtime positioning narrative**: README now explains that respire 2.x is the
+  `rsrs` CLI (rsrs-cli, a thin client) plus a separate local runtime (rsrs-runtime)
+  reached over loopback HTTP, so recall needs the runtime running -- installing the CLI
+  binary alone is not enough.
+- **Runtime install / troubleshooting guidance in the injected texts**: `NO_RSRS` now
+  walks a fresh install through both parts (`rsrs --version`, then `rsrs runtime status`
+  with `running=true` as the ready check, and `rsrs runtime start` from a host terminal
+  for a `runtime_error`, since a sandboxed client-only session cannot start it); RULES
+  gained a 7th rule telling the agent to surface those commands instead of assuming the
+  store is empty. README Install and Known limits carry the same self-check commands.
+- **`.gitignore` covers runtime state files**: `consolidate.json` and `selfnote.json`
+  no longer show up as untracked when the data dir falls back to the repo.
+
 ## 0.6.24 — 2026-11-04
 
 ### Added
