@@ -954,7 +954,7 @@ run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" weekly >/dev/null
 check "weekly fallback fires for a nonzero sub-threshold counter" "$(grep -aq 'reason=weekly count=5 thr=30' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
 : > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
 run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" error >/dev/null
-check "a dead resort process fails open (no fire)" "$(grep -aq '"out": "status_' "$TMP/hook.log" && ! grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+check "a dead resort process fails open (no fire)" "$(grep -aq status_ "$TMP/hook.log" && ! grep -aq fire "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
 : > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
 OUT_AUD="$(run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" audit_error)"
 check "fire is logged even when the audit call fails" "$(grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
