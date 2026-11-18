@@ -658,7 +658,7 @@ check "F2 healthy 2.x CLI injects the normal guidance (not NO_RSRS)" \
 # The old code wrote .done(already-present) as soon as find_rsrs found anything; with a
 # 1.x binary it must fall through, run npm, and only then verify + write .done(version).
 f_reset
-OUT_F3="$(F_HOME="$F_HOME" ROOT_HOOK="$ROOTM" "$PY3" - <<'PY'
+F_HOME="$F_HOME" ROOT_HOOK="$ROOTM" "$PY3" - > "$F_HOME/f3.out" <<'PY'
 import io, os, sys, importlib.util, traceback
 spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -723,7 +723,7 @@ print("NPM_RAN=%s" % ("YES" if any("npm" in c for c in calls) else "NO"))
 print("CALLED_PREFIX=%s" % ("YES" if any("--prefix" in c for c in calls) else "NO"))
 print("WORKER_OUT=%s" % out.getvalue().strip().replace("\n", " | "))
 PY
-)"
+OUT_F3="$(cat "$F_HOME/f3.out")"
 check "F3 stale 1.x does NOT early-exit (no already-present .done)" \
   "$OUT_F3" "hasnt:already-present"
 check "F3 worker keeps going: .done records the installed 2.x version" \
