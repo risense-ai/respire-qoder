@@ -664,6 +664,16 @@ spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 home = os.environ["F_HOME"]
 os.environ["RSRS_DATA_DIR"] = home              # keep all engine-setup markers in the F-home
+# cli_needs_repair now takes a PATH-dangling shortcut BEFORE probing --version. A CI PATH
+# may contain a dangling rsrs, which would skip the pre-flight probe and desync the fake_run
+# call counter (verify would wrongly get the 1.x answer). Stub shutil.which so "npm" resolves
+# (engine_setup_main needs it) while "rsrs" is never found -- a deterministic PATH on every
+# host, independent of what npm/PATH the runner happens to provide.
+_real_which = m.shutil.which
+m.shutil.which = lambda name, *a, **k: ("/usr/bin/npm" if name == "npm" else None)
+# Keep the real PATH free of any dangling rsrs (which would short-circuit cli_needs_repair
+# before its version probe); npm is supplied by the which-stub above, not by PATH.
+os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + "/usr/bin:/bin"
 old_engine = os.path.join(home, "oldbin", "rsrs")
 os.makedirs(os.path.dirname(old_engine), exist_ok=True)
 open(old_engine, "w").write("#!/bin/sh\necho respire/rsrs 1.0.19\n")
@@ -1441,6 +1451,10 @@ def fake_run_rsrs(bin_path, args, timeout):
     argvs.append([bin_path] + list(args))
     return FakeCompleted()
 m.run_rsrs = fake_run_rsrs
+# The worker must see a CLI present or it DEFERRs ("engine-setup owns it") before any
+# download. A CI runner has no rsrs, so inject one; run_rsrs is stubbed above, so the fake
+# binary is never executed. This keeps the download path deterministic on every host.
+m.find_rsrs = lambda cfg: "rsrs-stub"
 p = m._granite_paths()
 os.makedirs(p["home"], exist_ok=True)
 open(p["lock"], "w").write(str(os.getpid()))
