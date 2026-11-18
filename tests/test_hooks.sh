@@ -259,12 +259,12 @@ FACT="fixed stub fact sentence one."
 reset_state
 for mode in rem_ok rem_warn rem_pend rem_silent rem_slow rem_showbad rem_show_badarr rem_show_strdet; do
   out=$(run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" "$mode")
-  check "prefix pending ($mode)" "$out" "has:store pending"
-  check "prefix not written ($mode)" "$out" "has:nothing was written"
-  check "prefix policy ($mode)" "$out" "has:rsrs prompt"
-  check "prefix candidate bodies ($mode)" "$out" "has:rsrs show"
-  check "prefix placement order ($mode)" "$out" "has:update > merge > attach > new"
-  check "prefix parent required ($mode)" "$out" "has:remain pending"
+  check "prefix pending $mode" "$out" "has:store pending"
+  check "prefix not written $mode" "$out" "has:nothing was written"
+  check "prefix policy $mode" "$out" "has:rsrs prompt"
+  check "prefix candidate bodies $mode" "$out" "has:rsrs show"
+  check "prefix placement order $mode" "$out" "has:update > merge > attach > new"
+  check "prefix parent required $mode" "$out" "has:remain pending"
 done
 
 # ---- Stop store check (new contract: fail-open + request-level receipt + one-shot latch; each
@@ -274,7 +274,7 @@ stop_case() {  # stop_case <STUB_LIST>: reset, then a single Stop, output in OUT
   OUT_STOP="$(run_stub Stop "$STOP_JSON" ok "${1:-stale}")"
 }
 stop_case stale
-check "Stop nudges when no receipt exists (deny)" "$OUT_STOP" 'has:"decision": "deny"'
+check "Stop nudges when no receipt exists deny" "$OUT_STOP" 'has:"decision": "deny"'
 check "Stop prompt includes the store instruction" "$OUT_STOP" "has:rsrs remember"
 check "Stop blocking output parses as JSON" "$(printf '%s' "$OUT_STOP" | "$PY3" -c '
 import json,sys
@@ -282,38 +282,38 @@ d=json.loads(sys.stdin.read())
 print("OK" if d.get("decision")=="deny" and "rsrs remember" in d.get("reason","") else "BAD")')" "has:OK"
 reset_state
 run_stub Stop "$STOP_JSON" ok stale >/dev/null
-check "second Stop for the same request is allowed by the one-shot latch (host sent no active)" "$(run_stub Stop "$STOP_JSON" ok stale)" "empty"
+check "second Stop for the same request is allowed by the one-shot latch host sent no active" "$(run_stub Stop "$STOP_JSON" ok stale)" "empty"
 reset_state
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "next real question", "session_id": "selftest"}' ok >/dev/null
 check "a new request re-arms the latch and still nudges" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
 stop_case list_fail
-check "bad list envelope no longer affects Stop (no engine query)" "$OUT_STOP" 'has:"decision": "deny"'
+check "bad list envelope no longer affects Stop no engine query" "$OUT_STOP" 'has:"decision": "deny"'
 stop_case list_dead
-check "dead list process no longer affects Stop (no engine query)" "$OUT_STOP" 'has:"decision": "deny"'
+check "dead list process no longer affects Stop no engine query" "$OUT_STOP" 'has:"decision": "deny"'
 stop_case fresh
-check "engine write without a request receipt still nudges (no cross-turn suppression)" "$OUT_STOP" 'has:"decision": "deny"'
+check "engine write without a request receipt still nudges no cross-turn suppression" "$OUT_STOP" 'has:"decision": "deny"'
 reset_state
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "turn with engine store", "session_id": "selftest"}' ok >/dev/null
 # Review fix: Stop no longer queries the engine -- an engine-side write (unattributable to a
 # session) no longer suppresses, and there is no list-failure continuation path.
-check "engine write later than the prompt no longer suppresses (attribution removed)" "$(run_stub Stop "$STOP_JSON" ok fresh)" 'has:"decision": "deny"'
+check "engine write later than the prompt no longer suppresses attribution removed" "$(run_stub Stop "$STOP_JSON" ok fresh)" 'has:"decision": "deny"'
 NUDGE_N0="$(grep -c '"ev": "stop", "out": "nudge"' "$TMP/hook.log" 2>/dev/null)"; NUDGE_N0="${NUDGE_N0:-0}"
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "arm single nudge count", "session_id": "selftest"}' ok >/dev/null
 run_stub Stop "$STOP_JSON" ok fresh >/dev/null
 NUDGE_N1="$(grep -c '"ev": "stop", "out": "nudge"' "$TMP/hook.log" 2>/dev/null)"; NUDGE_N1="${NUDGE_N1:-0}"
-check "Stop makes no engine query (single nudge)" "$( [ $((NUDGE_N1 - NUDGE_N0)) = 1 ] && echo ONE || echo MANY )" "has:ONE"
+check "Stop makes no engine query single nudge" "$( [ $((NUDGE_N1 - NUDGE_N0)) = 1 ] && echo ONE || echo MANY )" "has:ONE"
 # State dir blocked by a same-name file -> cannot take the latch -> allow (never deny without a
 # lock); a fake path cannot be converted whole with cygpath -- convert $TMP and append.
 rm -rf "$TMP/not-a-dir"; printf 'x' > "$TMP/not-a-dir"
 reset_state
-check "unwritable state dir allows (never deny without a lock)" "$(printf '%s' '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "selftest"}' | RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TMPBASE/not-a-dir/sub" "$PY3" "$ROOT/hooks/respire.py" Stop)" "empty"
+check "unwritable state dir allows never deny without a lock" "$(printf '%s' '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "selftest"}' | RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TMPBASE/not-a-dir/sub" "$PY3" "$ROOT/hooks/respire.py" Stop)" "empty"
 rm -f "$TMP/not-a-dir"
 # The latch has no TTL: a 25-hour-old latch is still held, only a new prompt re-arms it.
 reset_state
 run_stub Stop "$STOP_JSON" ok stale >/dev/null
 OLDLATCH="$(ls "$TMP"/turnstate/.latch_* 2>/dev/null | head -1)"
 if [ -n "$OLDLATCH" ]; then printf '{"ts": 100}' > "$OLDLATCH"; fi
-check "a 25-hour-old latch is still held (no TTL)" "$( [ -n "$OLDLATCH" ] && out="$(run_stub Stop "$STOP_JSON" ok stale)" && [ -z "$out" ] && echo HELD || echo LOST )" "has:HELD"
+check "a 25-hour-old latch is still held no TTL" "$( [ -n "$OLDLATCH" ] && out="$(run_stub Stop "$STOP_JSON" ok stale)" && [ -z "$out" ] && echo HELD || echo LOST )" "has:HELD"
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "re-arm after aged latch", "session_id": "selftest"}' ok >/dev/null
 check "after a new request re-arms it, it can nudge again" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
 # /nomem only skips recall; it is still a new request (re-arms the latch).
@@ -334,10 +334,10 @@ check "sequence: Stop nudges after the real request" "$(run_stub Stop "$STOP_JSO
 RECAP_JSON="{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$RECAP_TRIGGER. Return one JSON only\", \"session_id\": \"selftest\"}"
 RECAP_OUT="$(run_stub UserPromptSubmit "$RECAP_JSON" ok)"
 check "sequence: internal Recap is skipped with no output" "$RECAP_OUT" "empty"
-check "sequence: Stop does not deny again after the internal Recap (not re-armed)" "$(run_stub Stop "$STOP_JSON" ok stale)" "empty"
+check "sequence: Stop does not deny again after the internal Recap not re-armed" "$(run_stub Stop "$STOP_JSON" ok stale)" "empty"
 reset_state
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"sessA\"}" rem_ok >/dev/null
-check "another session's disk record does not suppress this session (latch isolation)" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
+check "another session's disk record does not suppress this session latch isolation" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
 # ---- Review round #3 (behaviour): a per-session state file st_<sid>.json isolates A and B ----
 # After the final decision the state file is a diagnostic trail only: neither A's nor B's disk
 # record suppresses any Stop (bias to nudging); A/B isolation still comes from the per-session
@@ -346,13 +346,13 @@ reset_state
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"sessA\"}" rem_ok >/dev/null
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "A asks a new question", "session_id": "sessA"}' ok >/dev/null
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"sessB\"}" rem_ok >/dev/null
-check "B's write does not suppress A's new turn (A/B isolation)" "$(run_stub Stop '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "sessA"}' ok stale)" 'has:"decision": "deny"'
-check "B's own disk record does not suppress B either (suppression cancelled)" "$(run_stub Stop '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "sessB"}' ok stale)" 'has:"decision": "deny"'
+check "B's write does not suppress A's new turn A/B isolation" "$(run_stub Stop '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "sessA"}' ok stale)" 'has:"decision": "deny"'
+check "B's own disk record does not suppress B either suppression cancelled" "$(run_stub Stop '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "sessB"}' ok stale)" 'has:"decision": "deny"'
 reset_state
 STUB_TITLE="$FACT" STUB_CONTENT="$FACT" run_stub UserPromptSubmit "{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}" rem_ok >/dev/null
-check "Stop still denies after a successful store (disk suppression cancelled)" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
+check "Stop still denies after a successful store disk suppression cancelled" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "new turn after store", "session_id": "selftest"}' ok >/dev/null
-check "the next turn is not suppressed by the previous successful write (should nudge)" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
+check "the next turn is not suppressed by the previous successful write should nudge" "$(run_stub Stop "$STOP_JSON" ok stale)" 'has:"decision": "deny"'
 CFG_NUDGE0="$TMP/config-nudge0.json"
 echo '{"store_nudge_every": 0}' > "$CFG_NUDGE0"
 check "Stop throttle off is silent" "$(printf '%s' '{"hook_event_name": "Stop", "stop_hook_active": false, "session_id": "selftest"}' | RESPITE_CONFIG="$CFG_NUDGE0" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" RESPITE_TURN_STATE="$TURNBASE" "$PY3" "$ROOT/hooks/respire.py" Stop)" "empty"
@@ -504,13 +504,13 @@ check "engine missing injects the install command" "$OUT_ENG" "has:Install it wi
 check "guidance forbids inventing a super password" "$OUT_ENG" "has:never pass --super"
 check "guidance asks the user to keep the recovery code" "$OUT_ENG" "has:copy and keep it"
 check "engine missing includes the next configuration step" "$OUT_ENG" "has:rsrs register"
-check "engine-missing SessionStart offers the bootstrap worker (fork intercepted)" \
+check "engine-missing SessionStart offers the bootstrap worker fork intercepted" \
   "$(eng_blocked)" "has:YES"
 # the DIRECT call must still fork on the clean path: reset first (the SessionStart case
 # left its own lock/argv behind), then drive one engine_spawn with the stubbed Popen.
 eng_reset
 FORK_OUT="$(run_enginefork)"
-check "engine missing forks the bootstrap worker (task-43)" "$(eng_spawned)" "has:YES"
+check "engine missing forks the bootstrap worker task-43" "$(eng_spawned)" "has:YES"
 check "engine spawn reports the start verdict" "$FORK_OUT" "has:STATE=start"
 check "engine bootstrap spawn writes its own log" "$( [ -f "$ENG_HOME/engine-setup.log" ] && echo YES || echo NO )" "has:YES"
 # ---- E2: the NO_RSRS text advertises the 2.x channel, never the stale @latest line ----
@@ -544,7 +544,7 @@ check "engine: a live lock reports the running verdict" "$FORK_OUT" "has:STATE=r
 eng_reset
 printf 999999 > "$ENG_HOME/engine-setup.lock"
 FORK_OUT="$(run_enginefork)"
-check "engine: a stale lock retries (fresh pid check, not terminal)" "$(eng_spawned)" "has:YES"
+check "engine: a stale lock retries fresh pid check, not terminal" "$(eng_spawned)" "has:YES"
 check "engine: a stale lock falls through to the start verdict" "$FORK_OUT" "has:STATE=start"
 # ---- E3b: every hook-driven SessionStart is intercepted (no real npm from the suite) ----
 # A marker-free engine-missing session must reach the fork offer (the sentinel records it)
@@ -552,7 +552,7 @@ check "engine: a stale lock falls through to the start verdict" "$FORK_OUT" "has
 # above actually drives the stubbed path cleanly.
 eng_reset
 OUT_ENG="$(run_engineless_env)"
-check "engine-missing SessionStart offers the bootstrap worker (hook path)" \
+check "engine-missing SessionStart offers the bootstrap worker hook path" \
   "$(eng_blocked)" "has:YES"
 eng_reset   # leave the isolated home clean for anything after this block
 # ---- F1-F4: task-51 -- repair a broken/stale CLI (isolated fake HOME, no real npm) ----
@@ -652,7 +652,7 @@ f_reset
 OUT_F2="$(f_session new2x)"
 check "F2 healthy 2.x CLI never offers the bootstrap worker" \
   "$( [ -s "$ENG_ARGS" ] && grep -q -- '--engine-setup' "$ENG_ARGS" && echo YES || echo NO )" "has:NO"
-check "F2 healthy 2.x CLI injects the normal guidance (not NO_RSRS)" \
+check "F2 healthy 2.x CLI injects the normal guidance not NO_RSRS" \
   "$OUT_F2" "hasnt:Install it with"
 # ---- F3: engine_setup_main must NOT early-exit on a stale 1.x CLI ----
 # The old code wrote .done(already-present) as soon as find_rsrs found anything; with a
@@ -724,7 +724,7 @@ print("CALLED_PREFIX=%s" % ("YES" if any("--prefix" in c for c in calls) else "N
 print("WORKER_OUT=%s" % out.getvalue().strip().replace("\n", " | "))
 PY
 )"
-check "F3 stale 1.x does NOT early-exit (no already-present .done)" \
+check "F3 stale 1.x does NOT early-exit no already-present .done" \
   "$OUT_F3" "hasnt:already-present"
 check "F3 worker keeps going: .done records the installed 2.x version" \
   "$OUT_F3" "has:version=rsrs 2.0.0-dev.18"
@@ -746,7 +746,7 @@ m._repair_broken_path_links(target)            # the helper the worker calls aft
 PY
 check "F4 dangling cargo link now resolves to the new CLI" \
   "$( [ -L "$F_HOME/cargo/bin/rsrs" ] && [ -e "$F_HOME/cargo/bin/rsrs" ] && readlink "$F_HOME/cargo/bin/rsrs" | grep -q npm-global/bin/rsrs && echo YES || echo NO )" "has:YES"
-check "F4 the healed link is executable (agent shell can run it)" \
+check "F4 the healed link is executable agent shell can run it" \
   "$( [ -x "$F_HOME/cargo/bin/rsrs" ] && echo YES || echo NO )" "has:YES"
 # ---- F5: cli_needs_repair itself (unit level, every branch) ----
 f_reset
@@ -784,11 +784,11 @@ PY
 )"
 check "F5 engine None is needs-repair" "$REPAIR_OUT" "has:NONE_ENGINE=True"
 check "F5 dangling PATH rsrs symlink is needs-repair" "$REPAIR_OUT" "has:BROKEN_PATH=True"
-check "F5 absent rsrs in PATH is NOT needs-repair (explicit CLI ok)" "$REPAIR_OUT" "has:ABSENT_PATH=False"
+check "F5 absent rsrs in PATH is NOT needs-repair explicit CLI ok" "$REPAIR_OUT" "has:ABSENT_PATH=False"
 check "F5 stale 1.x engine is needs-repair" "$REPAIR_OUT" "has:OLD_1X=True"
 check "F5 healthy 2.x CLI is NOT needs-repair" "$REPAIR_OUT" "has:NEW_2X=False"
-check "F5 unparsable version fails open (no guess)" "$REPAIR_OUT" "has:UNPARSABLE=False"
-check "F5 probe exception fails open (never blocks SessionStart)" "$REPAIR_OUT" "has:RAISED=False"
+check "F5 unparsable version fails open no guess" "$REPAIR_OUT" "has:UNPARSABLE=False"
+check "F5 probe exception fails open never blocks SessionStart" "$REPAIR_OUT" "has:RAISED=False"
 # ---- E4: granite defers to engine-setup when the CLI is missing (no .failed marker) ----
 if [ -n "$ROOTM" ] && "$PY3" -c 'import importlib.util' 2>/dev/null; then
   gdefer() {
@@ -814,7 +814,7 @@ print(out.getvalue().strip())
 PY
   }
   GD_OUT="$(ROOT_HOOK="$ROOTM" gdefer)"
-  check "granite defers cleanly when the CLI is missing (no .failed marker)" "$GD_OUT" "has:RC=0 FAILED=False LOCK=False"
+  check "granite defers cleanly when the CLI is missing no .failed marker" "$GD_OUT" "has:RC=0 FAILED=False LOCK=False"
   check "granite defers with an explicit reason in the trail" "$GD_OUT" "has:[granite-setup] DEFER:"
 fi
 # ---- A+C session guidance: three-way SessionStart split (runtime down / no model / all good).
@@ -853,7 +853,7 @@ check "a present model variant still injects the rules" "$OUT_SS_MODELPRESENT" "
 OUT_SS_MODELERR="$(printf '%s' "$SS_JSON" | STUB_MODE=ok STUB_MODEL=error RESPITE_TEST_FAST=1 \
   RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
   RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" SessionStart)"
-check "a broken model envelope fails open (rules only, no note)" "$OUT_SS_MODELERR" "hasnt:no model"
+check "a broken model envelope fails open rules only, no note" "$OUT_SS_MODELERR" "hasnt:no model"
 check "a broken model envelope still injects the rules" "$OUT_SS_MODELERR" "has:respire memory discipline"
 # ---- Sync-off fourth segment: remote_configured=false (STUB_SYNC=off) -> cloud-sync note;
 # synced envelope -> no note; probe failure -> no sync note (status untrusted); model-missing
@@ -880,7 +880,7 @@ OUT_SS_STACK="$(printf '%s' "$SS_JSON" | STUB_MODE=ok STUB_SYNC=off STUB_MODEL=m
   RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
   RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" SessionStart)"
 check "model missing and sync off stack both notes" "$OUT_SS_STACK" "has:no model"
-check "model missing and sync off stack both notes (sync)" "$OUT_SS_STACK" "has:cloud sync off"
+check "model missing and sync off stack both notes sync" "$OUT_SS_STACK" "has:cloud sync off"
 check "stacked notes keep the rules" "$OUT_SS_STACK" "has:respire memory discipline"
 if [ "$HAVE_RSRS" = 1 ]; then
 
@@ -898,7 +898,7 @@ else
   echo "SKIP  real-store read-only branches (no rsrs engine: probe-failure section and 5 recall-injection checks)"
 fi
 
-check "an irrelevant prompt injects nothing (engine skip gate, deterministic stub)" "$(run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "kitchen recipe banana bread", "session_id": "selftest"}' rec_skip)" "empty"
+check "an irrelevant prompt injects nothing engine skip gate, deterministic stub" "$(run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "kitchen recipe banana bread", "session_id": "selftest"}' rec_skip)" "empty"
 check "a single-character prompt is skipped" "$(run UserPromptSubmit "k")" "empty"
 check "/nomem turns recall off" "$(run UserPromptSubmit "/nomem rsrs envelope structure")" "empty"
 # ---- T1-1 due-check: the footer appears only when review --due has items; every failure path
@@ -912,8 +912,8 @@ print("OK" if lines and lines[-1].startswith("【respire · due】") and any("au
 run_stub UserPromptSubmit "$DUE_JSON" ok "" "" hit >/dev/null
 check "due hit is logged with its reason code" "$(grep -q '"ev": "due", "out": "hit"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
 check "no due footer when nothing is due" "$(run_stub UserPromptSubmit "$DUE_JSON" ok)" "hasnt:【respire · due】"
-check "a failing review envelope fails open (no footer)" "$(run_stub UserPromptSubmit "$DUE_JSON" ok "" "" fail)" "hasnt:【respire · due】"
-check "a dead review process fails open (no footer)" "$(run_stub UserPromptSubmit "$DUE_JSON" ok "" "" error)" "hasnt:【respire · due】"
+check "a failing review envelope fails open no footer" "$(run_stub UserPromptSubmit "$DUE_JSON" ok "" "" fail)" "hasnt:【respire · due】"
+check "a dead review process fails open no footer" "$(run_stub UserPromptSubmit "$DUE_JSON" ok "" "" error)" "hasnt:【respire · due】"
 check "/nomem turns stay due-free even when items are due" "$(run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "/nomem skip recall only", "session_id": "selftest"}' ok "" "" hit)" "hasnt:【respire · due】"
 STORE_DUE_JSON="{\"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"$STORE_TRIGGER$FACT\", \"session_id\": \"selftest\"}"
 check "store-prefix turns stay due-free even when items are due" "$(run_stub UserPromptSubmit "$STORE_DUE_JSON" ok "" "" hit)" "hasnt:【respire · due】"
@@ -943,7 +943,7 @@ check "a fire turn still delivers the recall block" "$OUT_CONS" "has:auto-recall
 run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" "" >/dev/null
 Z_HAS=$(grep -ac 'out.*zero' "$TMP/hook.log"); Z_FIRE=$(grep -ac 'out.*fire' "$TMP/hook.log")
 if [ "$Z_HAS" -gt 0 ] && [ "$Z_FIRE" -eq 0 ]; then Z_SKIP=YES; else Z_SKIP=NO; fi
-check "zero counter skips (logged as zero, never fires)" "$Z_SKIP" "has:YES"
+check "zero counter skips logged as zero, never fires" "$Z_SKIP" "has:YES"
 : > "$TMP/hook.log"
 # Seed with bash printf, not python -c: native Windows python cannot open the inline MSYS
 # /tmp path (the hook's env-var path is converted for native children, inline code is not).
@@ -958,7 +958,7 @@ check "weekly fallback fires for a nonzero sub-threshold counter" "$(grep -aq 'r
 run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" error >/dev/null
 D_HAS=$(grep -ac 'status_' "$TMP/hook.log"); D_FIRE=$(grep -ac 'out.*fire' "$TMP/hook.log")
 if [ "$D_HAS" -gt 0 ] && [ "$D_FIRE" -eq 0 ]; then D_RESORT=YES; else D_RESORT=NO; fi
-check "a dead resort process fails open (no fire)" "$D_RESORT" "has:YES"
+check "a dead resort process fails open no fire" "$D_RESORT" "has:YES"
 : > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
 OUT_AUD="$(run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" audit_error)"
 check "fire is logged even when the audit call fails" "$(grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
@@ -1055,7 +1055,7 @@ N_SENT="$(calls_n_noreview)"
 sent_out="$(run UserPromptSubmit "$SENT_PROMPT" "$CFG_SPY")"
 check "a sentence-shaped prompt injects the keyword directive" "$sent_out" "has:recall pending"
 check "the directive tells the agent to distill keywords first" "$sent_out" "has:distill 3-5 keywords"
-check "a sentence-shaped prompt never queries the engine (review excluded)" "$( [ "$(calls_n_noreview)" = "$N_SENT" ] && echo SAME || echo CALLED )" "has:SAME"
+check "a sentence-shaped prompt never queries the engine review excluded" "$( [ "$(calls_n_noreview)" = "$N_SENT" ] && echo SAME || echo CALLED )" "has:SAME"
 check "the deferral is logged with its reason code" "$(grep -aq '"out": "defer_sentence"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
 check "a keyword-shaped prompt still recalls synchronously" "$(run UserPromptSubmit "$QUERY_RECALL" "$CFG_SPY")" "has:auto-recall"
 
@@ -1107,7 +1107,7 @@ check "keyword-shaped prompt stays synchronous" "$("$PY3" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r","'"$ROOTM"'/hooks/respire.py"); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 print("OK" if not m.looks_like_sentence("respire fusion attention gate pool") else "BAD")')" "has:OK"
-check "sentence-shaped prompt defers (the agent distils keywords)" "$(P="$SENT_PROMPT" "$PY3" -c '
+check "sentence-shaped prompt defers the agent distils keywords" "$(P="$SENT_PROMPT" "$PY3" -c '
 import os,sys,importlib.util
 spec=importlib.util.spec_from_file_location("r","'"$ROOTM"'/hooks/respire.py"); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 print("OK" if m.looks_like_sentence(os.environ["P"]) else "BAD")')" "has:OK"
@@ -1322,7 +1322,7 @@ PY
   gs_reset; gs_seed_done
   gs_run "missing"
   check "granite: a .done marker keeps the note truthful" "$GS_OUT" "has:granite-setup.log"
-  check "granite: a .done marker is terminal (state=done)" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:done"
+  check "granite: a .done marker is terminal state=done" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:done"
   check "granite: a .done marker never respawns the worker" "$(gs_spawned)" "has:NO"
 
   # ---- G5: a live lock (worker pid alive) -> already running, no second spawn ----
@@ -1341,7 +1341,7 @@ PY
   # ("no_engine" under the fast-path guard), never done/failed/running.
   gs_reset; gs_seed_lock 999999
   gs_run "missing"
-  check "granite: a stale lock is not terminal (decision still the no-marker path)" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:no_engine"
+  check "granite: a stale lock is not terminal decision still the no-marker path" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:no_engine"
   check "granite: a stale lock never blocks under the fast-path guard" "$(gs_spawned)" "has:NO"
 
   # ---- G7: worker download-failure branch -- isolated RSRS_DATA_DIR, no download ----
@@ -1408,7 +1408,7 @@ PY
   # ---- G8: .failed marker -> terminal, never respawned ----
   gs_reset; gs_seed_failed
   gs_run "missing"
-  check "granite: a .failed marker is terminal (state=failed)" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:failed"
+  check "granite: a .failed marker is terminal state=failed" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:failed"
   check "granite: a .failed marker never respawns the worker" "$(gs_spawned)" "has:NO"
   check "granite: a .failed marker creates no new setup log" "$(gs_mark_log)" "has:NO"
 
@@ -1497,10 +1497,10 @@ PY
     "RC=1 URLS="*[2-9]*" FETCH=False DONE=False FAILED=True FIRST=True"*) ;;
     *) GFALL=1 ;;
   esac
-  check "granite: download goes through urllib (first mirror answered, >=2 urlopen calls)" "$GS_OK_OUT" "has:URLS=3 FETCH=False"
+  check "granite: download goes through urllib first mirror answered, >=2 urlopen calls" "$GS_OK_OUT" "has:URLS=3 FETCH=False"
   check "granite: no argv ever carried an rsrs fetch subcommand" "$GS_OK_OUT" "has:FETCH=False"
   check "granite: the urllib path never reaches a CLI fetch error" "$GS_OK_OUT" "hasnt:unrecognized subcommand"
-  check "granite: sha-mismatched random bytes fail closed (.failed, no .done)" "$GS_OK_OUT" "has:RC=1 URLS=3 FETCH=False DONE=False FAILED=True FIRST=True"
+  check "granite: sha-mismatched random bytes fail closed .failed, no .done" "$GS_OK_OUT" "has:RC=1 URLS=3 FETCH=False DONE=False FAILED=True FIRST=True"
   [ "$GFALL" = 0 ] || { FAIL=$((FAIL+1)); echo "FAIL  granite: urllib download path (G9 regression guard)"; }
 else
   echo "SKIP  granite auto-setup group (importlib unavailable on this interpreter)"
