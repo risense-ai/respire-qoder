@@ -732,22 +732,32 @@ check "F3 worker actually ran npm with --prefix" \
   "$OUT_F3" "has:CALLED_PREFIX=YES"
 check "F3 worker exit code is 0" "$OUT_F3" "has:RC=0"
 # ---- F4: the worker heals a dangling PATH link (real symlink + real fs) ----
+# Build the dangling link and verify the heal entirely in Python: bash `ln -s`/`readlink`/`-x`
+# do not create or inspect true symlinks on MSYS/Windows. Heredoc writes to a file (not a $()
+# capture) so bash 3.2 on macOS parses it; the fake target content is irrelevant here.
 f_reset
-mkdir -p "$F_HOME/cargo/bin" "$F_HOME/npm-global/bin"
-ln -s "$F_HOME/deleted-target" "$F_HOME/cargo/bin/rsrs"      # dangling, like ~/.cargo/bin/rsrs
-printf '#!/bin/sh\necho rsrs 2.0.0-dev.18\n' > "$F_HOME/npm-global/bin/rsrs"
-chmod +x "$F_HOME/npm-global/bin/rsrs"
-PATH="$F_HOME/cargo/bin:$PATH" F_HOME="$F_HOME" ROOT_HOOK="$ROOTM" "$PY3" - <<'PY'
+F_HOME="$F_HOME" ROOT_HOOK="$ROOTM" "$PY3" - > "$F_HOME/f4.out" <<'PY'
 import os, sys, importlib.util
 spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-target = os.path.join(os.environ["F_HOME"], "npm-global", "bin", "rsrs")
+home = os.environ["F_HOME"]
+cargo = os.path.join(home, "cargo", "bin")
+os.makedirs(cargo, exist_ok=True)
+dangling = os.path.join(cargo, "rsrs")
+if os.path.lexists(dangling):
+    os.remove(dangling)
+os.symlink(os.path.join(home, "deleted-target"), dangling)   # dangling, like ~/.cargo/bin/rsrs
+target = os.path.join(home, "npm-global", "bin", "rsrs")
+os.makedirs(os.path.dirname(target), exist_ok=True)
+open(target, "w").write("#!/bin/sh\necho rsrs 2.0.0-dev.18\n")
+os.environ["PATH"] = cargo + os.pathsep + "/usr/bin:/bin"    # only cargo dir carries rsrs
 m._repair_broken_path_links(target)            # the helper the worker calls after install
+healed = (os.path.islink(dangling) and os.path.exists(dangling)
+          and "npm-global" in os.readlink(dangling).replace("\\", "/"))
+print("HEALED=%s" % ("YES" if healed else "NO"))
 PY
-check "F4 dangling cargo link now resolves to the new CLI" \
-  "$( [ -L "$F_HOME/cargo/bin/rsrs" ] && [ -e "$F_HOME/cargo/bin/rsrs" ] && readlink "$F_HOME/cargo/bin/rsrs" | grep -q npm-global/bin/rsrs && echo YES || echo NO )" "has:YES"
-check "F4 the healed link is executable (agent shell can run it)" \
-  "$( [ -x "$F_HOME/cargo/bin/rsrs" ] && echo YES || echo NO )" "has:YES"
+F4_OUT="$(cat "$F_HOME/f4.out")"
+check "F4 dangling cargo link now resolves to the new CLI" "$F4_OUT" "has:HEALED=YES"
 # ---- F5: cli_needs_repair itself (unit level, every branch) ----
 f_reset
 REPAIR_OUT="$(F_HOME="$F_HOME" ROOT_HOOK="$ROOTM" "$PY3" - <<'PY'
@@ -765,21 +775,24 @@ os.symlink(os.path.join(home, "deleted-target"), dangling)
 print("BROKEN_PATH=%s" % m.cli_needs_repair({}, "/bin/true"))  # dangling link -> True
 # Plain absence of rsrs in PATH is fine (CLI may be explicitly configured via cfg/env).
 os.remove(dangling)
-print("ABSENT_PATH=%s" % m.cli_needs_repair({}, "/bin/true"))  # no link, no version -> False
-old = os.path.join(home, "oldbin", "rsrs")
-os.makedirs(os.path.dirname(old), exist_ok=True)
-open(old, "w").write("#!/bin/sh\necho respire/rsrs 1.0.19\n"); os.chmod(old, 0o755)
-print("OLD_1X=%s" % m.cli_needs_repair({}, old))              # 1.x -> True
-open(old, "w").write("#!/bin/sh\necho rsrs 2.0.0-dev.18\n")    # now a healthy 2.x
-ok = os.path.join(cargo, "rsrs")
-open(ok, "w").write("#!/bin/sh\necho rsrs 2.0.0-dev.18\n"); os.chmod(ok, 0o755)
-print("NEW_2X=%s" % m.cli_needs_repair({}, old))              # no dangling link + 2.x -> False
-open(old, "w").write("#!/bin/sh\necho nothing parseable\n")
-print("UNPARSABLE=%s" % m.cli_needs_repair({}, old))          # fail-open -> False
+# Version branches stub run_rsrs instead of executing a #!/bin/sh file (native Windows
+# cannot run one). cli_needs_repair only reads .stdout, so a stub is faithful everywhere.
+ver = ["rsrs 2.0.0-dev.18"]
+def fake_rsrs(engine, args, *a, **k):
+    class R: pass
+    r = R(); r.stdout = ver[0]; r.stderr = ""; return r
+m.run_rsrs = fake_rsrs
+print("ABSENT_PATH=%s" % m.cli_needs_repair({}, "/bin/true"))  # no link, healthy 2.x -> False
+ver[0] = "respire/rsrs 1.0.19"
+print("OLD_1X=%s" % m.cli_needs_repair({}, "/bin/true"))       # 1.x -> True
+ver[0] = "rsrs 2.0.0-dev.18"
+print("NEW_2X=%s" % m.cli_needs_repair({}, "/bin/true"))       # healthy 2.x -> False
+ver[0] = "nothing parseable"
+print("UNPARSABLE=%s" % m.cli_needs_repair({}, "/bin/true"))   # fail-open -> False
 def boom(*a, **k):
     raise RuntimeError("probe exploded")
 m.run_rsrs = boom
-print("RAISED=%s" % m.cli_needs_repair({}, old))              # fail-open -> False
+print("RAISED=%s" % m.cli_needs_repair({}, "/bin/true"))       # fail-open -> False
 PY
 )"
 check "F5 engine None is needs-repair" "$REPAIR_OUT" "has:NONE_ENGINE=True"
@@ -1323,11 +1336,16 @@ PY
 
   # ---- G5: a live lock (worker pid alive) -> already running, no second spawn ----
   gs_reset
-  if gs_seed_lock "$$"; then
+  # Use a real OS process as the lock owner. $$ is an MSYS bash pid that native Windows Python
+  # cannot see via os.kill(pid, 0); a spawned sleep is a real process on every platform.
+  sleep 30 & LOCKPID=$!
+  if gs_seed_lock "$LOCKPID"; then
     gs_run "missing"
+    kill "$LOCKPID" 2>/dev/null || true
     check "granite: a live lock is reported as running" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:running"
     check "granite: a live lock never respawns the worker" "$(gs_spawned)" "has:NO"
   else
+    kill "$LOCKPID" 2>/dev/null || true
     echo "FAIL  granite: could not seed the live-lock marker (cannot verify the running case)"
     GFALL=1
   fi
