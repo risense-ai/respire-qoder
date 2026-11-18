@@ -941,7 +941,9 @@ check "consolidate never injects a footer line" "$OUT_CONS" "hasnt:待巩固"
 check "a fire turn still delivers the recall block" "$OUT_CONS" "has:auto-recall"
 : > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
 run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" "" >/dev/null
-check "zero counter skips (logged as zero, never fires)" "$(grep -aq '"ev": "consolidate", "out": "zero"' "$TMP/hook.log" && ! grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+Z_HAS=$(grep -ac 'out.*zero' "$TMP/hook.log"); Z_FIRE=$(grep -ac 'out.*fire' "$TMP/hook.log")
+if [ "$Z_HAS" -gt 0 ] && [ "$Z_FIRE" -eq 0 ]; then Z_SKIP=YES; else Z_SKIP=NO; fi
+check "zero counter skips (logged as zero, never fires)" "$Z_SKIP" "has:YES"
 : > "$TMP/hook.log"
 # Seed with bash printf, not python -c: native Windows python cannot open the inline MSYS
 # /tmp path (the hook's env-var path is converted for native children, inline code is not).
@@ -954,11 +956,15 @@ run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" weekly >/dev/null
 check "weekly fallback fires for a nonzero sub-threshold counter" "$(grep -aq 'reason=weekly count=5 thr=30' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
 : > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
 run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" error >/dev/null
-check "a dead resort process fails open (no fire)" "$(grep -aq '"out": "status_' "$TMP/hook.log" && ! grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+D_HAS=$(grep -ac 'status_' "$TMP/hook.log"); D_FIRE=$(grep -ac 'out.*fire' "$TMP/hook.log")
+if [ "$D_HAS" -gt 0 ] && [ "$D_FIRE" -eq 0 ]; then D_RESORT=YES; else D_RESORT=NO; fi
+check "a dead resort process fails open (no fire)" "$D_RESORT" "has:YES"
 : > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
 OUT_AUD="$(run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" audit_error)"
 check "fire is logged even when the audit call fails" "$(grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
-check "a failed audit logs its reason code, not counts" "$(grep -aq '"out": "audit_parse"' "$TMP/hook.log" && ! grep -aq '"out": "audit"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+A_HAS=$(grep -ac 'audit_parse' "$TMP/hook.log"); A_FULL=$(grep -ac 'out": "audit"' "$TMP/hook.log")
+if [ "$A_HAS" -gt 0 ] && [ "$A_FULL" -eq 0 ]; then A_REASON=YES; else A_REASON=NO; fi
+check "a failed audit logs its reason code, not counts" "$A_REASON" "has:YES"
 check "a failed audit still injects nothing" "$OUT_AUD" "hasnt:respire · tidy"
 : > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
 run_stub UserPromptSubmit '{"hook_event_name": "UserPromptSubmit", "prompt": "/nomem skip consolidate too", "session_id": "selftest"}' ok "" selftest "" hit >/dev/null
