@@ -646,12 +646,14 @@ import io, os, sys, importlib.util, traceback
 spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 home = os.environ["F_HOME"]
+os.environ["RSRS_DATA_DIR"] = home              # keep all engine-setup markers in the F-home
 old_engine = os.path.join(home, "oldbin", "rsrs")
 os.makedirs(os.path.dirname(old_engine), exist_ok=True)
 open(old_engine, "w").write("#!/bin/sh\necho respire/rsrs 1.0.19\n")
 os.chmod(old_engine, 0o755)
 m.find_rsrs = lambda cfg: old_engine          # stale 1.x found -> must NOT early-exit
 calls = []
+calls_preflight = [False]                      # first --version is the pre-flight repair probe
 def fake_run(cmd, **kw):
     calls.append(" ".join(map(str, cmd)))
     class R:
@@ -664,6 +666,11 @@ def fake_run(cmd, **kw):
         os.makedirs(os.path.dirname(target), exist_ok=True)
         open(target, "w").write("#!/bin/sh\necho rsrs 2.0.0-dev.18\n")
         os.chmod(target, 0o755)
+    elif len(cmd) > 1 and "--version" in cmd and not calls_preflight[0]:
+        # Only the FIRST version probe (cli_needs_repair on the stale found engine)
+        # reports 1.x; the post-install verify of the newly installed target is 2.x.
+        calls_preflight[0] = True
+        r.stdout, r.stderr = "respire/rsrs 1.0.19", ""
     else:
         r.stdout, r.stderr = "rsrs 2.0.0-dev.18", ""
     return r
@@ -721,7 +728,13 @@ cargo = os.path.join(home, "cargo", "bin")
 os.makedirs(cargo, exist_ok=True)
 os.environ["PATH"] = cargo + os.pathsep + "/usr/bin:/bin"      # no healthy rsrs in PATH
 print("NONE_ENGINE=%s" % m.cli_needs_repair({}, None))        # engine None -> True
-print("BROKEN_PATH=%s" % m.cli_needs_repair({}, "/bin/true"))  # which('rsrs') missing -> True
+# A DANGLING rsrs symlink in PATH is the only PATH signal that means repair is due.
+dangling = os.path.join(cargo, "rsrs")
+os.symlink(os.path.join(home, "deleted-target"), dangling)
+print("BROKEN_PATH=%s" % m.cli_needs_repair({}, "/bin/true"))  # dangling link -> True
+# Plain absence of rsrs in PATH is fine (CLI may be explicitly configured via cfg/env).
+os.remove(dangling)
+print("ABSENT_PATH=%s" % m.cli_needs_repair({}, "/bin/true"))  # no link, no version -> False
 old = os.path.join(home, "oldbin", "rsrs")
 os.makedirs(os.path.dirname(old), exist_ok=True)
 open(old, "w").write("#!/bin/sh\necho respire/rsrs 1.0.19\n"); os.chmod(old, 0o755)
@@ -729,7 +742,7 @@ print("OLD_1X=%s" % m.cli_needs_repair({}, old))              # 1.x -> True
 open(old, "w").write("#!/bin/sh\necho rsrs 2.0.0-dev.18\n")    # now a healthy 2.x
 ok = os.path.join(cargo, "rsrs")
 open(ok, "w").write("#!/bin/sh\necho rsrs 2.0.0-dev.18\n"); os.chmod(ok, 0o755)
-print("NEW_2X=%s" % m.cli_needs_repair({}, old))              # which ok + 2.x -> False
+print("NEW_2X=%s" % m.cli_needs_repair({}, old))              # no dangling link + 2.x -> False
 open(old, "w").write("#!/bin/sh\necho nothing parseable\n")
 print("UNPARSABLE=%s" % m.cli_needs_repair({}, old))          # fail-open -> False
 def boom(*a, **k):
@@ -739,7 +752,8 @@ print("RAISED=%s" % m.cli_needs_repair({}, old))              # fail-open -> Fal
 PY
 )"
 check "F5 engine None is needs-repair" "$REPAIR_OUT" "has:NONE_ENGINE=True"
-check "F5 broken/absent PATH rsrs is needs-repair" "$REPAIR_OUT" "has:BROKEN_PATH=True"
+check "F5 dangling PATH rsrs symlink is needs-repair" "$REPAIR_OUT" "has:BROKEN_PATH=True"
+check "F5 absent rsrs in PATH is NOT needs-repair (explicit CLI ok)" "$REPAIR_OUT" "has:ABSENT_PATH=False"
 check "F5 stale 1.x engine is needs-repair" "$REPAIR_OUT" "has:OLD_1X=True"
 check "F5 healthy 2.x CLI is NOT needs-repair" "$REPAIR_OUT" "has:NEW_2X=False"
 check "F5 unparsable version fails open (no guess)" "$REPAIR_OUT" "has:UNPARSABLE=False"

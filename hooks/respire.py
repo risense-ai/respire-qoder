@@ -310,16 +310,25 @@ def _rsrs_major(version_text: str):
 
 def cli_needs_repair(cfg: dict, engine) -> bool:
     """True when the CLI the shell would run is unusable even though find_rsrs found a
-    binary: PATH's `rsrs` is absent/broken, or the found engine is an old 1.x build
-    (task-51: a stale 1.0.19 ~/.rsrs/bin/rsrs must not mask a broken PATH). engine=None
+    binary: PATH holds a DANGLING `rsrs` symlink, or the found engine is an old 1.x build
+    (task-51: a stale 1.0.19 ~/.rsrs/bin/rsrs must not mask a broken PATH). A plain absence
+    of rsrs in PATH is NOT a repair signal: the CLI may be explicitly configured via
+    cfg["rsrs"]/RESPITE_RSRS/RESPIRE_BIN/an absolute path (e.g. the test stub). engine=None
     short-circuits to True (caller takes the missing-CLI branch anyway). Every failure is
     fail-open -> False, so a probe problem can never block SessionStart."""
     if not engine:
         return True
     try:
-        which = shutil.which("rsrs")
-        if not which or not (os.path.isfile(which) and os.access(which, os.X_OK)):
-            return True
+        # Only a dangling rsrs symlink in PATH means the shell would run a broken CLI.
+        for d in (os.environ.get("PATH") or "").split(os.pathsep):
+            if not d:
+                continue
+            link = os.path.join(d, "rsrs")
+            try:
+                if os.path.lexists(link) and not os.path.exists(link):
+                    return True
+            except Exception:
+                continue
         v = run_rsrs(engine, ["--version"], timeout=15)
         major = _rsrs_major((v.stdout or "") + "\n" + (v.stderr or ""))
         if major is None:
