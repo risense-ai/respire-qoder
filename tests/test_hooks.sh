@@ -674,6 +674,10 @@ m.shutil.which = lambda name, *a, **k: ("/usr/bin/npm" if name == "npm" else Non
 # Keep the real PATH free of any dangling rsrs (which would short-circuit cli_needs_repair
 # before its version probe); npm is supplied by the which-stub above, not by PATH.
 os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + "/usr/bin:/bin"
+# engine_setup_main builds its npm --prefix from expanduser("~"), NOT from RSRS_DATA_DIR.
+# Point "~" at the isolated home so the npm target and the verify target coincide; on a
+# clean CI HOME there is no real ~/.npm-global/bin/rsrs, so without this the verify fails.
+m.os.path.expanduser = lambda p: home if p in ("~", "") else p
 old_engine = os.path.join(home, "oldbin", "rsrs")
 os.makedirs(os.path.dirname(old_engine), exist_ok=True)
 open(old_engine, "w").write("#!/bin/sh\necho respire/rsrs 1.0.19\n")
@@ -717,6 +721,7 @@ print("RC=%s" % rc)
 print("DONE=%s" % content.strip())
 print("NPM_RAN=%s" % ("YES" if any("npm" in c for c in calls) else "NO"))
 print("CALLED_PREFIX=%s" % ("YES" if any("--prefix" in c for c in calls) else "NO"))
+print("WORKER_OUT=%s" % out.getvalue().strip().replace("\n", " | "))
 PY
 )"
 check "F3 stale 1.x does NOT early-exit (no already-present .done)" \
