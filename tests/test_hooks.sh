@@ -194,6 +194,31 @@ elif sub == "audit":
                                   "same_title_groups": 1, "truncated_titles": 0,
                                   "max_depth": 7, "hot_untyped": 5,
                                   "skill_template_gaps": 3, "total_active": 111}}))
+elif sub == "status":
+    # T-A1 session probe stub: a healthy status envelope so probe_status returns probe_ok=True
+    # and the SessionStart four-way split reaches the model_status + sync branches.
+    # STUB_SYNC=off -> remote_configured false (cloud-sync-off note expected);
+    # default/anything else -> remote_configured true + has_token (synced, no note).
+    sync_off = os.environ.get("STUB_SYNC", "") == "off"
+    print(json.dumps({"command": "status", "status": "ok",
+                      "summary": {"session": {"has_token": not sync_off, "user": "stub-user"},
+                                  "remote_configured": not sync_off,
+                                  "local_total": 10}}))
+elif sub == "model":
+    # T-A1 session model-readiness stub: "" -> a present variant (no model note injected),
+    # "missing" -> no variant present (RULES_NO_MODEL note), "error" -> garbage on stdout
+    # (model_status must fail-open: no note, no crash).
+    ms = os.environ.get("STUB_MODEL", "")
+    if ms == "missing":
+        print(json.dumps({"command": "model.engine", "status": "ok",
+                          "summary": {"variants": [{"name": "quantized", "state": "invalid_size"},
+                                                  {"name": "fp16", "state": "missing"}]}}))
+    elif ms == "error":
+        print("garbage not json")
+    else:
+        print(json.dumps({"command": "model.engine", "status": "ok",
+                          "summary": {"variants": [{"name": "quantized", "state": "present"},
+                                                  {"name": "fp16", "state": "invalid_size"}]}}))
 else:
     sys.exit(1)
 PYEOF
@@ -221,8 +246,8 @@ printf '{"session_rules": true, "rsrs": "%s", "store_nudge_every": 1}' "$STUB_EN
 # "weekly" = nonzero counter below threshold, "error" = nonzero rc, "audit_error" = fire then
 # the audit call fails.
 run_stub() {
-  local ev="$1" payload="$2" sm="${3:-ok}" sl="${4:-}" sess="${5:-selftest}" sd="${6:-}" st="${7:-}"
-  printf '%s' "$payload" | STUB_MODE="$sm" STUB_LIST="$sl" STUB_DUE="$sd" STUB_TIDY="$st" RESPITE_TEST_FAST=1 \
+  local ev="$1" payload="$2" sm="${3:-ok}" sl="${4:-}" sess="${5:-selftest}" sd="${6:-}" st="${7:-}" sb="${8:-}"
+  printf '%s' "$payload" | STUB_MODE="$sm" STUB_LIST="$sl" STUB_DUE="$sd" STUB_TIDY="$st" STUB_MODEL="$sb" RESPITE_TEST_FAST=1 \
     RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
     RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" "$ev"
 }
@@ -355,11 +380,467 @@ check "enabled=false stores silently too" "$(run UserPromptSubmit "$STORE_TRIGGE
 # ROOTM is a mixed path -- Windows python cannot resolve MSYS /d/...
 ROOTM="$(cygpath -m "$ROOT" 2>/dev/null || printf '%s' "$ROOT")"
 run_engineless() {
+  # Task-43: a missing CLI reaches the engine-bootstrap spawn decision (marker-gated).
+  # RESPITE_TEST_FAST=1 is the hook's own backdoor: the SessionStart branch records the
+  # verdict and never forks, so this is safe for a suite with no network; the fork itself
+  # is exercised by run_enginefork below. Isolated RSRS_DATA_DIR keeps every marker out of
+  # the real ~/.rsrs (this function runs 6+ times across E1-E3).
+  ROOT_HOOK="$ROOTM" "$PY3" - <<'PY'
+import io, os, sys, importlib.util, subprocess
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.find_rsrs = lambda cfg: None
+class PopenBlocked(Exception):
+    pass
+real_popen = subprocess.Popen
+def spy(*a, **k):
+    argv = a[0] if a else []
+    if any(str(x) == "--engine-setup" for x in argv):
+        with open(os.environ["ENG_POPOUT"], "w", encoding="utf-8") as f:
+            f.write("blocked")
+        raise PopenBlocked
+    return real_popen(*a, **k)
+subprocess.Popen = spy
+m.subprocess.Popen = spy
+sys.argv = ["respire.py", "SessionStart"]
+sys.stdin = io.StringIO('{"hook_event_name":"SessionStart"}')
+# The real spawn path never raises, but an O_EXCL lock can make engine_spawn return
+# "running" (a leftover from a previous case) -- record the verdict for diagnostics and
+# keep the session note flowing; spawn evidence always comes from the DIRECT call below.
+saved = sys.stdout
+out = io.StringIO()
+sys.stdout = out
+try:
+    m.main()
+except SystemExit:
+    pass
+except BaseException:
+    import traceback
+    traceback.print_exc(file=sys.stderr)
+sys.stdout = saved
+try:
+    print("ENGINESTATE=%s" % m.engine_spawn_state(m.load_config()))
+except BaseException:
+    print("ENGINESTATE=unknown")
+print(out.getvalue(), end="")
+PY
+}
+# Isolated home for the engine-bootstrap assertions: spawn evidence + marker idempotence.
+# export first: the python heredocs read ENG_ARGS/ENG_POPOUT from os.environ, so the
+# variables must be exported BEFORE the first call (a later export would be too late).
+ENG_HOME="$TMP/engine-home-$RANDOM$RANDOM"
+mkdir -p "$ENG_HOME"
+ENG_ARGS="$ENG_HOME/spawn-argv.txt"
+ENG_POPOUT="$ENG_HOME/spawn-blocked.txt"
+export ENG_ARGS ENG_POPOUT
+# E3 marker cases call run_enginefork directly from the parent shell; run_engineless_env's
+# export lives inside a $(...) subshell and does not reach them. Export the isolation root
+# here so _engine_paths() (via _granite_home/RSRS_DATA_DIR) reads the isolated markers.
+export RSRS_DATA_DIR="$ENG_HOME"
+eng_reset() {
+  rm -f "$ENG_ARGS" "$ENG_POPOUT" "$ENG_HOME"/engine-setup.done "$ENG_HOME"/engine-setup.failed \
+        "$ENG_HOME"/engine-setup.lock "$ENG_HOME"/engine-setup.log
+  : > "$ENG_POPOUT"
+}
+eng_spawned() { [ -s "$ENG_ARGS" ] && grep -q -- "--engine-setup" "$ENG_ARGS" && echo YES || echo NO; }
+eng_blocked() { [ -s "$ENG_POPOUT" ] && grep -q blocked "$ENG_POPOUT" && echo YES || echo NO; }
+# run_enginefork: one DIRECT engine_spawn call with subprocess.Popen stubbed: records the
+# argv and aborts before any real fork (the suite must never actually run npm).
+run_enginefork() {
+  # NOTE: this heredoc must NOT carry an env prefix -- the isolation vars are exported by
+  # run_engineless_env; a prefix assignment on the bash FUNCTION call would not reach the
+  # heredoc interpreter's environment on every shell.
+  ROOT_HOOK="$ROOTM" "$PY3" - <<'PY'
+import os, sys, importlib.util, subprocess
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.find_rsrs = lambda cfg: None
+class PopenBlocked(Exception):
+    """Sentinel: abort right after the stubbed fork so the spawn evidence survives."""
+real_popen = subprocess.Popen
+def spy(*a, **k):
+    argv = a[0] if a else []
+    if any(str(x) == "--engine-setup" for x in argv):
+        with open(os.environ["ENG_ARGS"], "w", encoding="utf-8") as f:
+            f.write(" ".join(map(str, argv)))
+        raise PopenBlocked
+    return real_popen(*a, **k)
+subprocess.Popen = spy
+m.subprocess.Popen = spy
+# A stale-lock case seeds a DEAD-pid lock that engine_spawn's O_EXCL cannot overwrite; clear
+# it first so the retry path can be observed. The live-lock case sets ENG_KEEP_LOCK=1 so its
+# seeded LIVE lock is preserved and read as "running".
+if os.environ.get("ENG_KEEP_LOCK") != "1":
+    try:
+        os.remove(m._engine_paths()["lock"])
+    except OSError:
+        pass
+state = ""
+try:
+    state = m.engine_spawn(m.load_config())
+except PopenBlocked:
+    state = "start"       # the sentinel fires after the fork decision: that IS start
+except BaseException:
+    import traceback
+    traceback.print_exc(file=sys.stderr)
+print("STATE=%s" % state)
+PY
+}
+run_engineless_env() {
+  # run_engineless has no env prefix (it must stay a bare function call for $(...) capture);
+  # the isolation vars are exported instead -- every process in this shell then sees them.
+  RSRS_DATA_DIR="$ENG_HOME"
+  RESPITE_LOG="$ENG_HOME/hook.log"
+  export RSRS_DATA_DIR RESPITE_LOG
+  run_engineless
+}
+# ---- E1: the four NO_RSRS checks, plus the fork evidence and the bootstrap log ----
+eng_reset
+# SessionStart runs FIRST: any engine-setup fork it attempts is intercepted by the
+# PopenBlocked sentinel (ENG_POPOUT), so the suite never runs npm; the note assertions
+# do not depend on spawn evidence -- the clean fork is driven by run_enginefork below.
+OUT_ENG="$(run_engineless_env)"
+check "engine missing injects the install command" "$OUT_ENG" "has:Install it with"
+check "guidance forbids inventing a super password" "$OUT_ENG" "has:never pass --super"
+check "guidance asks the user to keep the recovery code" "$OUT_ENG" "has:copy and keep it"
+check "engine missing includes the next configuration step" "$OUT_ENG" "has:rsrs register"
+check "engine-missing SessionStart offers the bootstrap worker (fork intercepted)" \
+  "$(eng_blocked)" "has:YES"
+# the DIRECT call must still fork on the clean path: reset first (the SessionStart case
+# left its own lock/argv behind), then drive one engine_spawn with the stubbed Popen.
+eng_reset
+FORK_OUT="$(run_enginefork)"
+check "engine missing forks the bootstrap worker (task-43)" "$(eng_spawned)" "has:YES"
+check "engine spawn reports the start verdict" "$FORK_OUT" "has:STATE=start"
+check "engine bootstrap spawn writes its own log" "$( [ -f "$ENG_HOME/engine-setup.log" ] && echo YES || echo NO )" "has:YES"
+# ---- E2: the NO_RSRS text advertises the 2.x channel, never the stale @latest line ----
+check "NO_RSRS tells the user to install the 2.x dev channel" "$OUT_ENG" "has:rsrs-cli@dev"
+check "NO_RSRS never advertises the stale @latest channel" "$OUT_ENG" "hasnt:rsrs-cli@latest"
+check "NO_RSRS says the plugin installs the CLI in the background" "$OUT_ENG" "has:installing the CLI for you in the background"
+# ---- E3: marker idempotence -- .done / .failed / live lock / stale lock ----
+# Each case seeds its markers FIRST and then runs ONE direct engine_spawn call; the marker
+# must return its verdict with no fork (eng_spawned must stay NO), a stale lock must retry
+# (reach the fork, which the stub records). run_enginefork clears any leftover lock AFTER
+# the state check would have run... see its comment: it clears the lock first, so a
+# previous case's lock cannot mask the seeded marker (the marker check runs before the
+# lock check, and the lock is gone by then).
+eng_reset
+printf seeded > "$ENG_HOME/engine-setup.done"
+FORK_OUT="$(run_enginefork)"
+check "engine: a .done marker never respawns the worker" "$(eng_spawned)" "has:NO"
+check "engine: a .done marker reports the done verdict" "$FORK_OUT" "has:STATE=done"
+eng_reset
+printf seeded > "$ENG_HOME/engine-setup.failed"
+FORK_OUT="$(run_enginefork)"
+check "engine: a .failed marker never respawns the worker" "$(eng_spawned)" "has:NO"
+check "engine: a .failed marker reports the failed verdict" "$FORK_OUT" "has:STATE=failed"
+eng_reset
+printf '%s' "$$" > "$ENG_HOME/engine-setup.lock"
+export ENG_KEEP_LOCK=1
+FORK_OUT="$(run_enginefork)"
+unset ENG_KEEP_LOCK
+check "engine: a live lock never respawns the worker" "$(eng_spawned)" "has:NO"
+check "engine: a live lock reports the running verdict" "$FORK_OUT" "has:STATE=running"
+eng_reset
+printf 999999 > "$ENG_HOME/engine-setup.lock"
+FORK_OUT="$(run_enginefork)"
+check "engine: a stale lock retries (fresh pid check, not terminal)" "$(eng_spawned)" "has:YES"
+check "engine: a stale lock falls through to the start verdict" "$FORK_OUT" "has:STATE=start"
+# ---- E3b: every hook-driven SessionStart is intercepted (no real npm from the suite) ----
+# A marker-free engine-missing session must reach the fork offer (the sentinel records it)
+# while never leaving real evidence of an executed install: only the DIRECT engine_spawn
+# above actually drives the stubbed path cleanly.
+eng_reset
+OUT_ENG="$(run_engineless_env)"
+check "engine-missing SessionStart offers the bootstrap worker (hook path)" \
+  "$(eng_blocked)" "has:YES"
+eng_reset   # leave the isolated home clean for anything after this block
+# ---- F1-F4: task-51 -- repair a broken/stale CLI (isolated fake HOME, no real npm) ----
+# Each case runs in its own F-home with its own find_rsrs stub, so the real machine state
+# (~/.rsrs/bin/rsrs present or not) can never change the verdict. Popen is stubbed: the
+# SessionStart fork is intercepted (PopenBlocked) and the worker's npm/verify calls are
+# simulated, so nothing real ever runs. Exports are set BEFORE the first call.
+F_HOME="$TMP/repair-home-$RANDOM$RANDOM"
+mkdir -p "$F_HOME"
+ENG_ARGS="$F_HOME/spawn-argv.txt"
+ENG_POPOUT="$F_HOME/spawn-blocked.txt"
+export ENG_ARGS ENG_POPOUT
+f_reset() {
+  rm -f "$ENG_ARGS" "$ENG_POPOUT" "$F_HOME"/engine-setup.done "$F_HOME"/engine-setup.failed \
+        "$F_HOME"/engine-setup.lock "$F_HOME"/engine-setup.log "$F_HOME"/hook.log \
+        "$F_HOME"/cargo/bin/rsrs "$F_HOME"/rsrs/bin/rsrs "$F_HOME"/oldbin/rsrs \
+        "$F_HOME"/npm-global/bin/rsrs
+  : > "$ENG_POPOUT"
+}
+f_spawned() { [ -s "$ENG_ARGS" ] && grep -q -- "--engine-setup" "$ENG_ARGS" && echo YES || echo NO; }
+# F_SESSION <scenario>: one SessionStart with a scripted find_rsrs + version output.
+# scenario old1x = found engine reports 1.x (stale build); scenario new2x = reports 2.x.
+# Scenario old1x also plants a dangling PATH link (fake cargo) to mirror the real break.
+f_session() {
+  local scen="$1"
+  SCEN="$scen" F_HOME="$F_HOME" ROOT_HOOK="$ROOTM" "$PY3" - <<'PY'
+import io, os, sys, importlib.util, subprocess, traceback
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+home = os.environ["F_HOME"]
+scen = os.environ["SCEN"]
+# --- scripted environment: PATH carries only a fake cargo dir (no real rsrs) ---
+cargo = os.path.join(home, "cargo", "bin")
+os.makedirs(cargo, exist_ok=True)
+dangling = os.path.join(cargo, "rsrs")
+if os.path.lexists(dangling):
+    os.remove(dangling)
+if scen == "old1x":
+    os.symlink(os.path.join(home, "deleted-target"), dangling)   # dangling on purpose
+    os.environ["PATH"] = cargo + os.pathsep + os.environ.get("PATH", "")
+else:
+    os.environ["PATH"] = cargo + os.pathsep + "/usr/bin:/bin"    # no rsrs anywhere in PATH
+# --- fake engine binaries: real files, version scripted by name ---
+old_engine = os.path.join(home, "oldbin", "rsrs")
+os.makedirs(os.path.dirname(old_engine), exist_ok=True)
+open(old_engine, "w").write("#!/bin/sh\necho respire/rsrs 1.0.19\n")
+os.chmod(old_engine, 0o755)
+if scen == "new2x":
+    ok = os.path.join(cargo, "rsrs")
+    if os.path.lexists(ok):
+        os.remove(ok)
+    open(ok, "w").write("#!/bin/sh\necho rsrs 2.0.0-dev.18\n")
+    os.chmod(ok, 0o755)
+    m.find_rsrs = lambda cfg: ok
+else:
+    m.find_rsrs = lambda cfg: old_engine
+# --- Popen stub: intercept the SessionStart fork, never let npm run ---
+class PopenBlocked(Exception):
+    pass
+real_popen = subprocess.Popen
+def spy(*a, **k):
+    argv = a[0] if a else []
+    if any(str(x) == "--engine-setup" for x in argv):
+        with open(os.environ["ENG_ARGS"], "w", encoding="utf-8") as f:
+            f.write(" ".join(map(str, argv)))
+        with open(os.environ["ENG_POPOUT"], "w", encoding="utf-8") as f:
+            f.write("blocked")
+        raise PopenBlocked
+    return real_popen(*a, **k)
+subprocess.Popen = spy
+m.subprocess.Popen = spy
+sys.argv = ["respire.py", "SessionStart"]
+sys.stdin = io.StringIO('{"hook_event_name":"SessionStart"}')
+saved = sys.stdout
+out = io.StringIO()
+sys.stdout = out
+try:
+    m.main()
+except (SystemExit, PopenBlocked):
+    pass
+except BaseException:
+    traceback.print_exc(file=sys.stderr)
+sys.stdout = saved
+print(out.getvalue(), end="")
+PY
+}
+# ---- F1: broken PATH + stale 1.x engine -> SessionStart must take the repair branch ----
+f_reset
+OUT_F1="$(f_session old1x)"
+check "F1 broken-PATH+1x engine still shows the install guidance" "$OUT_F1" "has:Install it with"
+check "F1 broken-PATH+1x engine offers the bootstrap worker" \
+  "$( [ -s "$ENG_POPOUT" ] && grep -q blocked "$ENG_POPOUT" && echo YES || echo NO )" "has:YES"
+check "F1 dangling PATH link was present before the worker ran" \
+  "$( [ -L "$F_HOME/cargo/bin/rsrs" ] && [ ! -e "$F_HOME/cargo/bin/rsrs" ] && echo YES || echo NO )" "has:YES"
+# ---- F2: a healthy 2.x CLI in PATH -> no repair (regression) ----
+f_reset
+OUT_F2="$(f_session new2x)"
+check "F2 healthy 2.x CLI never offers the bootstrap worker" \
+  "$( [ -s "$ENG_ARGS" ] && grep -q -- '--engine-setup' "$ENG_ARGS" && echo YES || echo NO )" "has:NO"
+check "F2 healthy 2.x CLI injects the normal guidance (not NO_RSRS)" \
+  "$OUT_F2" "hasnt:Install it with"
+# ---- F3: engine_setup_main must NOT early-exit on a stale 1.x CLI ----
+# The old code wrote .done(already-present) as soon as find_rsrs found anything; with a
+# 1.x binary it must fall through, run npm, and only then verify + write .done(version).
+f_reset
+F_HOME="$F_HOME" ROOT_HOOK="$ROOTM" "$PY3" - > "$F_HOME/f3.out" <<'PY'
+import io, os, sys, importlib.util, traceback
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+home = os.environ["F_HOME"]
+os.environ["RSRS_DATA_DIR"] = home              # keep all engine-setup markers in the F-home
+# cli_needs_repair now takes a PATH-dangling shortcut BEFORE probing --version. A CI PATH
+# may contain a dangling rsrs, which would skip the pre-flight probe and desync the fake_run
+# call counter (verify would wrongly get the 1.x answer). Stub shutil.which so "npm" resolves
+# (engine_setup_main needs it) while "rsrs" is never found -- a deterministic PATH on every
+# host, independent of what npm/PATH the runner happens to provide.
+_real_which = m.shutil.which
+m.shutil.which = lambda name, *a, **k: ("/usr/bin/npm" if name == "npm" else None)
+# Keep the real PATH free of any dangling rsrs (which would short-circuit cli_needs_repair
+# before its version probe); npm is supplied by the which-stub above, not by PATH.
+os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + "/usr/bin:/bin"
+# engine_setup_main builds its npm --prefix from expanduser("~"), NOT from RSRS_DATA_DIR.
+# Point "~" at the isolated home so the npm target and the verify target coincide; on a
+# clean CI HOME there is no real ~/.npm-global/bin/rsrs, so without this the verify fails.
+m.os.path.expanduser = lambda p: home if p in ("~", "") else p
+old_engine = os.path.join(home, "oldbin", "rsrs")
+os.makedirs(os.path.dirname(old_engine), exist_ok=True)
+open(old_engine, "w").write("#!/bin/sh\necho respire/rsrs 1.0.19\n")
+os.chmod(old_engine, 0o755)
+m.find_rsrs = lambda cfg: old_engine          # stale 1.x found -> must NOT early-exit
+# F3's contract is "a stale CLI must NOT early-exit; reinstall then verify". Express the
+# stale verdict directly instead of relying on how many --version probes cli_needs_repair
+# makes (that count varies with PATH/which across hosts). cli_needs_repair itself is covered
+# by F5. Every --version here is a post-install verify and returns the healthy 2.x.
+m.cli_needs_repair = lambda cfg, eng: True
+calls = []
+def fake_run(cmd, **kw):
+    calls.append(" ".join(map(str, cmd)))
+    class R:
+        pass
+    r = R()
+    r.returncode = 0
+    if cmd and str(cmd[0]).endswith("npm"):
+        r.stdout, r.stderr = "added 1 package", ""
+        target = os.path.join(home, ".npm-global", "bin", "rsrs")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        open(target, "w").write("#!/bin/sh\necho rsrs 2.0.0-dev.18\n")
+        os.chmod(target, 0o755)
+    else:
+        r.stdout, r.stderr = "rsrs 2.0.0-dev.18", ""
+    return r
+m.subprocess.run = fake_run
+saved = sys.stdout
+out = io.StringIO()
+sys.stdout = out
+try:
+    rc = m.engine_setup_main()
+except BaseException:
+    sys.stdout = saved
+    traceback.print_exc(file=sys.stderr)
+    raise
+sys.stdout = saved
+done = os.path.join(home, "engine-setup.done")
+content = open(done, encoding="utf-8").read() if os.path.exists(done) else "<none>"
+print("RC=%s" % rc)
+print("DONE=%s" % content.strip())
+print("NPM_RAN=%s" % ("YES" if any("npm" in c for c in calls) else "NO"))
+print("CALLED_PREFIX=%s" % ("YES" if any("--prefix" in c for c in calls) else "NO"))
+print("WORKER_OUT=%s" % out.getvalue().strip().replace("\n", " | "))
+PY
+OUT_F3="$(cat "$F_HOME/f3.out")"
+check "F3 stale 1.x does NOT early-exit (no already-present .done)" \
+  "$OUT_F3" "hasnt:already-present"
+check "F3 worker keeps going: .done records the installed 2.x version" \
+  "$OUT_F3" "has:version=rsrs 2.0.0-dev.18"
+check "F3 worker actually ran npm with --prefix" \
+  "$OUT_F3" "has:CALLED_PREFIX=YES"
+check "F3 worker exit code is 0" "$OUT_F3" "has:RC=0"
+# ---- F4: the worker heals a dangling PATH link (real symlink + real fs) ----
+# Build the dangling link and verify the heal entirely in Python: bash `ln -s`/`readlink`/`-x`
+# do not create or inspect true symlinks on MSYS/Windows. Heredoc writes to a file (not a $()
+# capture) so bash 3.2 on macOS parses it; the fake target content is irrelevant here.
+f_reset
+F_HOME="$F_HOME" ROOT_HOOK="$ROOTM" "$PY3" - > "$F_HOME/f4.out" <<'PY'
+import os, sys, importlib.util
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+home = os.environ["F_HOME"]
+cargo = os.path.join(home, "cargo", "bin")
+os.makedirs(cargo, exist_ok=True)
+dangling = os.path.join(cargo, "rsrs")
+if os.path.lexists(dangling):
+    os.remove(dangling)
+os.symlink(os.path.join(home, "deleted-target"), dangling)   # dangling, like ~/.cargo/bin/rsrs
+target = os.path.join(home, "npm-global", "bin", "rsrs")
+os.makedirs(os.path.dirname(target), exist_ok=True)
+open(target, "w").write("#!/bin/sh\necho rsrs 2.0.0-dev.18\n")
+os.environ["PATH"] = cargo + os.pathsep + "/usr/bin:/bin"    # only cargo dir carries rsrs
+m._repair_broken_path_links(target)            # the helper the worker calls after install
+healed = (os.path.islink(dangling) and os.path.exists(dangling)
+          and "npm-global" in os.readlink(dangling).replace("\\", "/"))
+print("HEALED=%s" % ("YES" if healed else "NO"))
+PY
+F4_OUT="$(cat "$F_HOME/f4.out")"
+check "F4 dangling cargo link now resolves to the new CLI" "$F4_OUT" "has:HEALED=YES"
+# ---- F5: cli_needs_repair itself (unit level, every branch) ----
+f_reset
+REPAIR_OUT="$(F_HOME="$F_HOME" ROOT_HOOK="$ROOTM" "$PY3" - <<'PY'
+import os, sys, importlib.util
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+home = os.environ["F_HOME"]
+cargo = os.path.join(home, "cargo", "bin")
+os.makedirs(cargo, exist_ok=True)
+os.environ["PATH"] = cargo + os.pathsep + "/usr/bin:/bin"      # no healthy rsrs in PATH
+print("NONE_ENGINE=%s" % m.cli_needs_repair({}, None))        # engine None -> True
+# A DANGLING rsrs symlink in PATH is the only PATH signal that means repair is due.
+dangling = os.path.join(cargo, "rsrs")
+os.symlink(os.path.join(home, "deleted-target"), dangling)
+print("BROKEN_PATH=%s" % m.cli_needs_repair({}, "/bin/true"))  # dangling link -> True
+# Plain absence of rsrs in PATH is fine (CLI may be explicitly configured via cfg/env).
+os.remove(dangling)
+# Version branches stub run_rsrs instead of executing a #!/bin/sh file (native Windows
+# cannot run one). cli_needs_repair only reads .stdout, so a stub is faithful everywhere.
+ver = ["rsrs 2.0.0-dev.18"]
+def fake_rsrs(engine, args, *a, **k):
+    class R: pass
+    r = R(); r.stdout = ver[0]; r.stderr = ""; return r
+m.run_rsrs = fake_rsrs
+print("ABSENT_PATH=%s" % m.cli_needs_repair({}, "/bin/true"))  # no link, healthy 2.x -> False
+ver[0] = "respire/rsrs 1.0.19"
+print("OLD_1X=%s" % m.cli_needs_repair({}, "/bin/true"))       # 1.x -> True
+ver[0] = "rsrs 2.0.0-dev.18"
+print("NEW_2X=%s" % m.cli_needs_repair({}, "/bin/true"))       # healthy 2.x -> False
+ver[0] = "nothing parseable"
+print("UNPARSABLE=%s" % m.cli_needs_repair({}, "/bin/true"))   # fail-open -> False
+def boom(*a, **k):
+    raise RuntimeError("probe exploded")
+m.run_rsrs = boom
+print("RAISED=%s" % m.cli_needs_repair({}, "/bin/true"))       # fail-open -> False
+PY
+)"
+check "F5 engine None is needs-repair" "$REPAIR_OUT" "has:NONE_ENGINE=True"
+check "F5 dangling PATH rsrs symlink is needs-repair" "$REPAIR_OUT" "has:BROKEN_PATH=True"
+check "F5 absent rsrs in PATH is NOT needs-repair (explicit CLI ok)" "$REPAIR_OUT" "has:ABSENT_PATH=False"
+check "F5 stale 1.x engine is needs-repair" "$REPAIR_OUT" "has:OLD_1X=True"
+check "F5 healthy 2.x CLI is NOT needs-repair" "$REPAIR_OUT" "has:NEW_2X=False"
+check "F5 unparsable version fails open (no guess)" "$REPAIR_OUT" "has:UNPARSABLE=False"
+check "F5 probe exception fails open (never blocks SessionStart)" "$REPAIR_OUT" "has:RAISED=False"
+# ---- E4: granite defers to engine-setup when the CLI is missing (no .failed marker) ----
+if [ -n "$ROOTM" ] && "$PY3" -c 'import importlib.util' 2>/dev/null; then
+  gdefer() {
+    local home="$TMP/granite-defer-$RANDOM$RANDOM"
+    mkdir -p "$home"
+    RSRS_DATA_DIR="$home" RESPITE_LOG="$home/hook.log" "$PY3" - <<'PY'
+import io, os, sys, importlib.util
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.find_rsrs = lambda cfg: None     # a machine with no CLI: the DEFER branch must win
+home = m._granite_home()
+p = m._granite_paths()
+open(p["lock"], "w").write(str(os.getpid()))
+out = io.StringIO()
+sys.stdout = out
+try:
+    rc = m.granite_setup_main()
+finally:
+    sys.stdout = sys.__stdout__
+print("RC=%s FAILED=%s LOCK=%s DONE=%s" % (
+    rc, os.path.exists(p["failed"]), os.path.exists(p["lock"]), os.path.exists(p["done"])))
+print(out.getvalue().strip())
+PY
+  }
+  GD_OUT="$(ROOT_HOOK="$ROOTM" gdefer)"
+  check "granite defers cleanly when the CLI is missing (no .failed marker)" "$GD_OUT" "has:RC=0 FAILED=False LOCK=False"
+  check "granite defers with an explicit reason in the trail" "$GD_OUT" "has:[granite-setup] DEFER:"
+fi
+# ---- A+C session guidance: three-way SessionStart split (runtime down / no model / all good).
+# The runtime-down and all-good paths need a real `status` envelope, so they are injected by
+# monkeypatching probe_status; model_status goes through the stub engine above (STUB_MODEL).
+SS_JSON='{"hook_event_name":"SessionStart"}'
+run_probe_fail() {
   ROOT_HOOK="$ROOTM" "$PY3" - <<'PY'
 import io, os, sys, importlib.util
 spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-m.find_rsrs = lambda cfg: None
+m.find_rsrs = lambda cfg: "rsrs-stub"
+m.probe_status = lambda b: (None, None, False, None)
 sys.argv = ["respire.py", "SessionStart"]
 sys.stdin = io.StringIO('{"hook_event_name":"SessionStart"}')
 try:
@@ -368,10 +849,52 @@ except SystemExit:
     pass
 PY
 }
-check "engine missing injects the install command" "$(run_engineless)" "has:Install it with"
-check "guidance forbids inventing a super password" "$(run_engineless)" "has:never pass --super"
-check "guidance asks the user to keep the recovery code" "$(run_engineless)" "has:copy and keep it"
-check "engine missing includes the next configuration step" "$(run_engineless)" "has:rsrs register"
+check "runtime down injects the runtime-start guidance" "$(run_probe_fail)" "has:rsrs runtime start"
+check "runtime down keeps the rules" "$(run_probe_fail)" "has:respire memory discipline"
+check "runtime down still tells the agent the store is not empty" "$(run_probe_fail)" "has:do not assume the memory store is empty"
+OUT_SS_MODELMISS="$(printf '%s' "$SS_JSON" | STUB_MODE=ok STUB_MODEL=missing RESPITE_TEST_FAST=1 \
+  RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
+  RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" SessionStart)"
+check "no model variant injects the lexical-mode note" "$OUT_SS_MODELMISS" "has:no model"
+check "no model note keeps the rules" "$OUT_SS_MODELMISS" "has:respire memory discipline"
+check "no model note does not push an install" "$OUT_SS_MODELMISS" "hasnt:you should install"
+OUT_SS_MODELPRESENT="$(printf '%s' "$SS_JSON" | STUB_MODE=ok STUB_MODEL=present RESPITE_TEST_FAST=1 \
+  RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
+  RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" SessionStart)"
+check "a present model variant injects no model note" "$OUT_SS_MODELPRESENT" "hasnt:no model"
+check "a present model variant still injects the rules" "$OUT_SS_MODELPRESENT" "has:respire memory discipline"
+OUT_SS_MODELERR="$(printf '%s' "$SS_JSON" | STUB_MODE=ok STUB_MODEL=error RESPITE_TEST_FAST=1 \
+  RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
+  RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" SessionStart)"
+check "a broken model envelope fails open (rules only, no note)" "$OUT_SS_MODELERR" "hasnt:no model"
+check "a broken model envelope still injects the rules" "$OUT_SS_MODELERR" "has:respire memory discipline"
+# ---- Sync-off fourth segment: remote_configured=false (STUB_SYNC=off) -> cloud-sync note;
+# synced envelope -> no note; probe failure -> no sync note (status untrusted); model-missing
+# + sync-off stacks both notes.
+OUT_SS_SYNCOFF="$(printf '%s' "$SS_JSON" | STUB_MODE=ok STUB_SYNC=off STUB_MODEL=present RESPITE_TEST_FAST=1 \
+  RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
+  RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" SessionStart)"
+check "sync off injects the cloud-sync note" "$OUT_SS_SYNCOFF" "has:cloud sync off"
+check "sync off note keeps the rules" "$OUT_SS_SYNCOFF" "has:respire memory discipline"
+check "sync off note does not claim the store is broken" "$OUT_SS_SYNCOFF" "has:local-only use is fully supported"
+check "sync off with model present injects no model note" "$OUT_SS_SYNCOFF" "hasnt:no model"
+OUT_SS_SYNCON="$(printf '%s' "$SS_JSON" | STUB_MODE=ok STUB_MODEL=present RESPITE_TEST_FAST=1 \
+  RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
+  RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" SessionStart)"
+check "synced session injects no cloud-sync note" "$OUT_SS_SYNCON" "hasnt:cloud sync off"
+check "synced session still injects the rules" "$OUT_SS_SYNCON" "has:respire memory discipline"
+OUT_SS_PROBEFAIL="$(printf '%s' "$SS_JSON" | STUB_MODE=ok STUB_SYNC=off RESPITE_TEST_FAST=1 \
+  RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
+  RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" \
+  RESPITE_FAKE_PROBE_FAIL=1 "$PY3" "$ROOT/hooks/respire.py" SessionStart)"
+check "probe failure does not inject the cloud-sync note" "$OUT_SS_PROBEFAIL" "hasnt:cloud sync off"
+check "probe failure still injects the runtime-down note" "$OUT_SS_PROBEFAIL" "has:rsrs runtime start"
+OUT_SS_STACK="$(printf '%s' "$SS_JSON" | STUB_MODE=ok STUB_SYNC=off STUB_MODEL=missing RESPITE_TEST_FAST=1 \
+  RESPITE_CONFIG="$CFG_STUB" RESPITE_LOG="$TMP/hook.log" RESPITE_NUDGE_STATE="$TMP/nudge" \
+  RESPITE_TURN_STATE="$TURNBASE" RESPITE_CONSOLIDATE_STATE="$TMP/consolidate.json" "$PY3" "$ROOT/hooks/respire.py" SessionStart)"
+check "model missing and sync off stack both notes" "$OUT_SS_STACK" "has:no model"
+check "model missing and sync off stack both notes (sync)" "$OUT_SS_STACK" "has:cloud sync off"
+check "stacked notes keep the rules" "$OUT_SS_STACK" "has:respire memory discipline"
 if [ "$HAVE_RSRS" = 1 ]; then
 
   out=$(run UserPromptSubmit "$QUERY_RECALL")
@@ -444,7 +967,9 @@ run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" weekly >/dev/null
 check "weekly fallback fires for a nonzero sub-threshold counter" "$(grep -aq 'reason=weekly count=5 thr=30' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
 : > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
 run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" error >/dev/null
-check "a dead resort process fails open (no fire)" "$(grep -aq '"out": "status_' "$TMP/hook.log" && ! grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
+D_HAS=$(grep -ac status_ "$TMP/hook.log"); D_FIRE=$(grep -ac fire "$TMP/hook.log")
+if [ "$D_HAS" -gt 0 ] && [ "$D_FIRE" -eq 0 ]; then D_RESORT=YES; else D_RESORT=NO; fi
+check "a dead resort process fails open no fire" "$D_RESORT" "has:YES"
 : > "$TMP/hook.log"; rm -f "$TMP/consolidate.json"
 OUT_AUD="$(run_stub UserPromptSubmit "$CONS_JSON" ok "" selftest "" audit_error)"
 check "fire is logged even when the audit call fails" "$(grep -aq '"out": "fire"' "$TMP/hook.log" && echo YES || echo NO)" "has:YES"
@@ -668,6 +1193,334 @@ elif [ "$WITH_STORE" = 1 ]; then
   echo "SKIP  write probe (no rsrs engine found, cannot write the real store)"
 else
   echo "SKIP  write probe (read-only by default; add --store to write the real store and auto-forget)"
+fi
+
+# ---- task-31: granite-311m-r2 automatic setup (respire.py:1002-1282) ----------------------
+# The worker is NEVER forked here: RESPITE_TEST_FAST=1 makes granite_spawn_state return
+# "no_engine" unless RESPITE_GRANITE_SPAWN=1 is also set, and RSRS_DATA_DIR points the
+# granite state (done/failed/lock/log) at a per-case temp dir instead of the real ~/.rsrs.
+# The trigger is model_status returning False (respire.py:2332): the no-model backdoor is
+# RESPITE_FAKE_NO_MODEL=1, the present verdict comes from the STUB_MODEL=missing engine stub.
+if [ -n "$ROOTM" ] && "$PY3" -c 'import importlib.util' 2>/dev/null; then
+  GFALL=0
+  GS_LOG=""
+  GRANITE_HOME=""
+  GS_STATE=""   # granite_spawn_state monkeypatched into the hook; records the verdict
+  GS_ARGS=""    # argv captured by the stub Popen: empty == no worker ever forked
+  GS_CTR=""     # same dir as GS_ARGS, one file per spawn attempt (the counter)
+
+  # gs_reset: fresh isolated RSRS_DATA_DIR + clean counters. No marker is pre-seeded here
+  # (gs_seed_* do that per idempotence case), so the decision starts on the no-marker path.
+  gs_reset() {
+    GS_HOME="$TMP/granite-home-$RANDOM$RANDOM"
+    mkdir -p "$GS_HOME"
+    : > "$GS_HOME/hook.log"
+    # derive the spawn-record paths FIRST, then clear every marker and record of this
+    # fresh home: an uninitialised first gs_reset used to rm nothing (GS_ARGS empty) and
+    # let the previous case's state file leak into this one.
+    GS_STATE="$GS_HOME/spawn-state.txt"
+    GS_ARGS="$GS_HOME/spawn-argv.txt"
+    GS_CTR="$GS_HOME/spawn-count.txt"
+    rm -f "$GS_HOME"/granite-setup.done "$GS_HOME"/granite-setup.lock \
+          "$GS_HOME"/granite-setup.failed "$GS_HOME"/granite-setup.log \
+          "$GS_STATE" "$GS_ARGS" "$GS_CTR"
+  }
+
+  # gs_seed_done / gs_seed_lock <pid> / gs_seed_failed: pre-place a terminal marker so the
+  # idempotence cases can assert "no second spawn".
+  gs_seed_done()   { printf 'seeded' > "$GS_HOME/granite-setup.done"; }
+  gs_seed_failed() { printf 'seeded' > "$GS_HOME/granite-setup.failed"; }
+  gs_seed_lock()   { printf '%s' "$1" > "$GS_HOME/granite-setup.lock"; }
+  gs_state() { cat "$GS_STATE" 2>/dev/null || echo missing; }
+
+  # gs_run <model-verdict> [extra-env ...]: one SessionStart through the real hook with the
+  # granite spawn intercepted: granite_spawn_state is monkeypatched to record the verdict
+  # and return "no_engine" (so nothing forks), and subprocess.Popen is patched so only the
+  # --granite-setup fork is stubbed to record its argv (real engine calls stay real).
+  # Output lands in GS_OUT; whether the fork happened is NOT inferred from GS_OUT -- under
+  # the stub fork Popen raises PopenBlocked before the record is flushed, so spawn evidence
+  # always comes from GS_ARGS/GS_CTR, and the note assertions come from GS_OUT.
+  gs_run() {
+    local mver="$1"; shift
+    GS_OUT="$(ROOT_HOOK="$ROOTM" RSRS_DATA_DIR="$GS_HOME" RESPITE_LOG="$GS_HOME/hook.log" \
+      RESPITE_CONFIG="$CFG_STUB" STUB_MODEL="$mver" STUB_MODE=ok \
+      STUB_ARGS="$GS_ARGS" STUB_CTR="$GS_CTR" STUB_STATE="$GS_STATE" \
+      RESPITE_TEST_FAST=1 "$@" "$PY3" - <<'PY'
+import io, os, sys, importlib.util, subprocess
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+real_state, real_popen = m.granite_spawn_state, subprocess.Popen
+class PopenBlocked(Exception):
+    """Abort right after the stubbed fork: the granite path stays fail-open (SystemExit
+    would also abort main and skip the rules record, masking the verdict)."""
+def spy_state(cfg):
+    if os.environ.get("GS_SELF"):
+        open(os.environ["GS_LOCK"], "w").write(str(os.getpid()))
+    v = real_state(cfg)
+    with open(os.environ["STUB_STATE"], "w", encoding="utf-8") as f:
+        f.write(v)
+    return "no_engine"          # test backdoor: record the verdict, never fork the worker
+def spy_popen(*a, **k):
+    argv = a[0] if a else []
+    if not any(str(x) == "--granite-setup" for x in argv):
+        return real_popen(*a, **k)     # only the granite fork is stubbed
+    with open(os.environ["STUB_CTR"], "a", encoding="utf-8") as f:
+        f.write("spawn\n")
+    with open(os.environ["STUB_ARGS"], "w", encoding="utf-8") as f:
+        f.write(" ".join(map(str, argv)))
+    raise PopenBlocked         # sentinel: abort the hook before the record is flushed
+m.granite_spawn_state, subprocess.Popen = spy_state, spy_popen
+sys.argv = ["respire.py", "SessionStart"]
+sys.stdin = io.StringIO('{"hook_event_name":"SessionStart"}')
+try:
+    m.main()
+except SystemExit:
+    pass
+except PopenBlocked:
+    pass
+PY
+)"
+  }
+
+  # gs_spawn: spawn evidence. Under RESPITE_TEST_FAST=1 the real worker must NOT fork (that
+  # would be a 300MB download), so the hook's own guard returns "no_engine" first and no
+  # fork happens -- gs_state is the "no marker + not running" decision (see gs_reset docs),
+  # while gs_spawned/gs_count record whether a --granite-setup process was ever attempted.
+  gs_spawned() { [ -s "$GS_ARGS" ] && grep -q -- "--granite-setup" "$GS_ARGS" && echo YES || echo NO; }
+  gs_count() { [ -f "$GS_CTR" ] && wc -l < "$GS_CTR" | tr -d '[:space:]' || echo 0; }
+  gs_mark_log() { [ -f "$GS_HOME/granite-setup.log" ] && echo YES || echo NO; }
+  # Every case runs under RESPITE_TEST_FAST=1 + an empty RSRS_DATA_DIR: under the test
+  # fast-path the worker can only fail fast (no model files present), so it must never
+  # download: no model file may appear anywhere in the isolated home.
+  gs_no_download() {
+    if find "$GS_HOME" -type f \( -name '*.onnx' -o -name 'tokenizer.json' -o -name '*.part' \) 2>/dev/null | grep -q .; then
+      echo LEAK
+    else echo CLEAN; fi
+  }
+
+  # ---- G1: no present model -> RULES_NO_MODEL (granite-setup.log mentioned) + spawn decision ----
+  gs_reset
+  gs_run "missing"              # STUB_MODEL=missing -> no variant present -> model_status False
+  OUT_GRAN="$GS_OUT"
+  check "granite: no-model session keeps the rules" "$OUT_GRAN" "has:respire memory discipline"
+  check "granite: no-model session announces the background setup" "$OUT_GRAN" "has:granite-setup.log"
+  check "granite: no-model session names the 300MB default model" "$OUT_GRAN" "has:granite-311m"
+  # No marker + no live lock -> the decision is "no_engine" under RESPITE_TEST_FAST=1
+  # (respire.py:1079: the fast-path guard returns before the real fork, so no 300MB
+  # download can start from a test). The .done/.failed/.live-lock verdicts are covered
+  # by G4/G5/G8 below; "start" without the guard is not reachable from this suite.
+  check "granite: no-marker session reaches the spawn decision" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:no_engine"
+  check "granite: no-model session never actually forks under RESPITE_TEST_FAST" "$(gs_spawned)" "has:NO"
+  check "granite: no-model session creates no setup log without a fork" "$(gs_mark_log)" "has:NO"
+
+  # ---- G2: a present model -> no note, no spawn ----
+  gs_reset
+  gs_run "present"
+  check "granite: present model session never mentions the setup log" "$GS_OUT" "hasnt:granite-setup.log"
+  check "granite: present model session keeps the rules" "$GS_OUT" "has:respire memory discipline"
+  check "granite: present model session never reaches the spawn branch" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "hasnt:start"
+  check "granite: present model session forks no worker" "$(gs_spawned)" "has:NO"
+  check "granite: present model session creates no setup log" "$(gs_mark_log)" "has:NO"
+
+  # ---- G3: model_status None (malformed envelope, fail-open) -> no granite at all ----
+  gs_reset
+  gs_run "error"
+  check "granite: model-status failure never mentions the setup log" "$GS_OUT" "hasnt:granite-setup.log"
+  check "granite: model-status failure never reaches the spawn branch" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "hasnt:start"
+  check "granite: model-status failure forks no worker" "$(gs_spawned)" "has:NO"
+
+  # ---- G4: .done marker -> terminal, no respawn ----
+  gs_reset; gs_seed_done
+  gs_run "missing"
+  check "granite: a .done marker keeps the note truthful" "$GS_OUT" "has:granite-setup.log"
+  check "granite: a .done marker is terminal (state=done)" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:done"
+  check "granite: a .done marker never respawns the worker" "$(gs_spawned)" "has:NO"
+
+  # ---- G5: a live lock (worker pid alive) -> already running, no second spawn ----
+  gs_reset
+  # Seed a placeholder lock, then have the Python under test rewrite it with its OWN pid.
+  # A bash $$ / spawned-process pid is an MSYS pid that native Windows Python cannot see via
+  # os.kill(pid, 0); the running Python's own pid is live and visible on every platform.
+  if gs_seed_lock "1"; then
+    export GS_SELF=1
+    export GS_LOCK="$GS_HOME/granite-setup.lock"
+    gs_run "missing"
+    unset GS_SELF GS_LOCK
+    check "granite: a live lock is reported as running" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:running"
+    check "granite: a live lock never respawns the worker" "$(gs_spawned)" "has:NO"
+  else
+    echo "FAIL  granite: could not seed the live-lock marker (cannot verify the running case)"
+    GFALL=1
+  fi
+
+  # ---- G6: a dead/stale lock must NOT stop a retry (stale != terminal) ----
+  # A dead pid in the lock is treated as stale: the decision is the plain no-marker path
+  # ("no_engine" under the fast-path guard), never done/failed/running.
+  gs_reset; gs_seed_lock 999999
+  gs_run "missing"
+  check "granite: a stale lock is not terminal (decision still the no-marker path)" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:no_engine"
+  check "granite: a stale lock never blocks under the fast-path guard" "$(gs_spawned)" "has:NO"
+
+  # ---- G7: worker download-failure branch -- isolated RSRS_DATA_DIR, no download ----
+  # The fetches cannot resolve the pinned 300MB files, so every mirror fails fast and
+  # granite_setup_main must write .failed, remove the lock and log the reason without
+  # raising. RSRS_DATA_DIR isolates all granite state; nothing touches the real ~/.rsrs.
+  # Task-43: a CLI-less machine now takes the DEFER branch instead of failing, so this
+  # failure-branch driver injects the engine (find_rsrs -> stub path) and stubs urlopen to
+  # die at once: the download must fail exactly as before, independently of the DEFER path.
+  gfail_noengine_dl() {
+    local home="$TMP/granite-fail-$RANDOM$RANDOM"
+    mkdir -p "$home"
+    RSRS_DATA_DIR="$home" RESPITE_LOG="$home/hook.log" "$PY3" - <<'PY'
+import io, os, sys, importlib.util, urllib.request
+from urllib.error import URLError
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.find_rsrs = lambda cfg: "/stub/rsrs"     # engine present: the failure branch, not DEFER
+def dead_urlopen(url, timeout=None):
+    raise URLError("mirror down (test stub)")
+urllib.request.urlopen = dead_urlopen      # module-level (respire resolves it from globals)
+m.urllib.request.urlopen = dead_urlopen
+home = m._granite_home()
+# the worker clears the lock on success and on failure; seed one so the removal is observable
+open(os.path.join(home, "granite-setup.lock"), "w").write(str(os.getpid()))
+with open(os.path.join(home, "granite-setup.log"), "w", encoding="utf-8"):
+    pass
+out = io.StringIO()
+sys.stdout = out
+try:
+    rc = m.granite_setup_main()
+finally:
+    sys.stdout = sys.__stdout__
+print("RC=%s FAILED=%s LOCK=%s" % (
+    rc, os.path.exists(os.path.join(home, "granite-setup.failed")),
+    os.path.exists(os.path.join(home, "granite-setup.lock"))))
+print(out.getvalue().strip())
+PY
+  }
+  # The worker's own capture handle is redirected by the hook at spawn time; here we are
+  # driving granite_setup_main directly, so the printed trail becomes stdout of gfail.
+  # The engine is explicitly absent (the DEFER branch owns a CLI-less machine) and the
+  # download mirror is stubbed to die at once: the failure contract below is the download
+  # branch, while the DEFER contract has its own isolated check (E4).
+  GF_OUT="$(ROOT_HOOK="$ROOTM" gfail_noengine_dl)"
+  GF_HOME=""
+  # locate the isolated granite home this run just used (one dir; no markers were pre-seeded)
+  for _d in "$TMP"/granite-fail-*; do
+    [ -d "$_d" ] || continue
+    GF_HOME="$_d"   # newest run last; overwrite until the failed marker shows up
+    if [ -f "$_d/granite-setup.failed" ]; then GF_HOME="$_d"; break; fi
+  done
+  case "$GF_OUT" in
+    *"RC=1 FAILED=True LOCK=False"*) ;;
+    *) GFALL=1 ;;
+  esac
+  check "granite: download failure writes the .failed marker and clears the lock" "$GF_OUT" "has:RC=1 FAILED=True LOCK=False"
+  check "granite: download failure keeps the reason in the setup log" "$GF_OUT" "has:[granite-setup] FAILED:"
+  check "granite: download failure leaves no half-published model file" \
+    "$( [ -n "$GF_HOME" ] && find "$GF_HOME/models" -type f 2>/dev/null | grep -q . && echo LEFTOVER || echo CLEAN )" "has:CLEAN"
+  check "granite: no model file was ever downloaded in the failing run" \
+    "$( [ -n "$GF_HOME" ] && find "$GF_HOME" -type f \( -name '*.onnx' -o -name 'tokenizer.json' -o -name '*.part' \) 2>/dev/null | grep -q . && echo LEAK || echo CLEAN )" "has:CLEAN"
+
+  # ---- G8: .failed marker -> terminal, never respawned ----
+  gs_reset; gs_seed_failed
+  gs_run "missing"
+  check "granite: a .failed marker is terminal (state=failed)" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:failed"
+  check "granite: a .failed marker never respawns the worker" "$(gs_spawned)" "has:NO"
+  check "granite: a .failed marker creates no new setup log" "$(gs_mark_log)" "has:NO"
+
+  check "granite: session hook never downloaded any model file" "$(gs_no_download)" "has:CLEAN"
+  [ "$GFALL" = 0 ] || { FAIL=$((FAIL+1)); echo "FAIL  granite: worker failure branch (marker/log contract)"; }
+
+  # ---- G9: the download really goes through urllib (regression: an invented `rsrs fetch`
+  # ---- subcommand made every real setup fail; this must FAIL if the worker shells out ----)
+  # urlopen is monkeypatched to stream the pinned SIZE for each file (random bytes: the
+  # worker's real sha256 check then rejects them on purpose, so no 300MB download can ever
+  # complete here), run_rsrs records every engine argv, and the outcome line proves which
+  # path the download took: URLS>=2 + FETCH=False + no "unrecognized subcommand".
+  # If respire.py ever goes back to `rsrs fetch`, FETCH flips to True and this FAILs.
+  gsuccess() {
+    local home="$TMP/granite-ok-$RANDOM$RANDOM"
+    mkdir -p "$home"
+    ROOT_HOOK="$ROOTM" RSRS_DATA_DIR="$home" RESPITE_LOG="$home/hook.log" "$PY3" - <<'PY'
+import hashlib, io, os, sys, importlib, importlib.util, subprocess, types, urllib.request
+from urllib.error import URLError
+spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+calls, argvs = [], []
+# Serve the pinned SIZE for whatever file the URL asks for (bytes stay random: the real
+# sha256 comparison must fail, which keeps the test offline and download-proof).
+class FakeResp:
+    def __init__(self, payload, url):
+        self._it = iter([payload]); self.url = url
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def read(self, n=-1):
+        return next(self._it, b"")
+def fake_urlopen(url, timeout=None):
+    calls.append(url)
+    for rel, size, sha in m.GRANITE_FILES:
+        if url.endswith("/" + rel):
+            # FIRST mirror serves the right size; later mirrors die at once so the
+            # fallback chain terminates after exactly one urlopen per file (URLS=2).
+            if "hf-mirror.com/" in url:
+                return FakeResp(os.urandom(size), url)
+            raise URLError("mirror down (test stub)")
+    raise AssertionError("unexpected url: %r" % (url,))
+urllib.request.urlopen = fake_urlopen
+# module-level lookups inside respire.py resolve against its globals: patch there
+m.urllib.request.urlopen = fake_urlopen
+class FakeCompleted:
+    returncode = 0
+    stdout = '{"status": "ok"}'
+    stderr = ""
+def fake_run_rsrs(bin_path, args, timeout):
+    argvs.append([bin_path] + list(args))
+    return FakeCompleted()
+m.run_rsrs = fake_run_rsrs
+# The worker must see a CLI present or it DEFERRs ("engine-setup owns it") before any
+# download. A CI runner has no rsrs, so inject one; run_rsrs is stubbed above, so the fake
+# binary is never executed. This keeps the download path deterministic on every host.
+m.find_rsrs = lambda cfg: "rsrs-stub"
+p = m._granite_paths()
+os.makedirs(p["home"], exist_ok=True)
+open(p["lock"], "w").write(str(os.getpid()))
+with open(p["log"], "w", encoding="utf-8"):
+    pass
+out = io.StringIO()
+sys.stdout = out
+try:
+    rc = m.granite_setup_main()
+finally:
+    sys.stdout = sys.__stdout__
+fetch_argv = any("fetch" in a for argv in argvs for a in argv)
+# urlopen calls in call order: first mirror per file, then the fallback mirrors. A urllib
+# worker always starts with the first mirror and reaches >=2 calls (one per file when the
+# first mirror answers, or mirror-chain when it dies); a `rsrs fetch` worker records 0.
+first_ok = bool(calls) and "hf-mirror.com/" in calls[0]
+print("RC=%s URLS=%d FETCH=%s DONE=%s FAILED=%s FIRST=%s" % (
+    rc, len(calls), fetch_argv, os.path.exists(p["done"]), os.path.exists(p["failed"]),
+    first_ok))
+print("RUNS=%d" % len(argvs))
+print(out.getvalue().strip())
+PY
+  }
+  GS_OK_OUT="$(ROOT_HOOK="$ROOTM" gsuccess)"
+  # FIRST=True + URLS>=2: the first mirror answers and every later mirror dies at once, so
+  # a urllib worker starts at hf-mirror.com and calls urlopen at least twice before the
+  # real sha256 check fails closed; a `rsrs fetch` worker calls urlopen zero times
+  # (FIRST=False, URLS=0) -> this FAILs.
+  case "$GS_OK_OUT" in
+    "RC=1 URLS="*[2-9]*" FETCH=False DONE=False FAILED=True FIRST=True"*) ;;
+    *) GFALL=1 ;;
+  esac
+  check "granite: download goes through urllib (first mirror answered, >=2 urlopen calls)" "$GS_OK_OUT" "has:URLS=3 FETCH=False"
+  check "granite: no argv ever carried an rsrs fetch subcommand" "$GS_OK_OUT" "has:FETCH=False"
+  check "granite: the urllib path never reaches a CLI fetch error" "$GS_OK_OUT" "hasnt:unrecognized subcommand"
+  check "granite: sha-mismatched random bytes fail closed (.failed, no .done)" "$GS_OK_OUT" "has:RC=1 URLS=3 FETCH=False DONE=False FAILED=True FIRST=True"
+  [ "$GFALL" = 0 ] || { FAIL=$((FAIL+1)); echo "FAIL  granite: urllib download path (G9 regression guard)"; }
+else
+  echo "SKIP  granite auto-setup group (importlib unavailable on this interpreter)"
 fi
 
 echo "----"
