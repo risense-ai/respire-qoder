@@ -386,10 +386,22 @@ run_engineless() {
   # is exercised by run_enginefork below. Isolated RSRS_DATA_DIR keeps every marker out of
   # the real ~/.rsrs (this function runs 6+ times across E1-E3).
   ROOT_HOOK="$ROOTM" "$PY3" - <<'PY'
-import io, os, sys, importlib.util
+import io, os, sys, importlib.util, subprocess
 spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.find_rsrs = lambda cfg: None
+class PopenBlocked(Exception):
+    pass
+real_popen = subprocess.Popen
+def spy(*a, **k):
+    argv = a[0] if a else []
+    if any(str(x) == "--engine-setup" for x in argv):
+        with open(os.environ["ENG_POPOUT"], "w", encoding="utf-8") as f:
+            f.write("blocked")
+        raise PopenBlocked
+    return real_popen(*a, **k)
+subprocess.Popen = spy
+m.subprocess.Popen = spy
 sys.argv = ["respire.py", "SessionStart"]
 sys.stdin = io.StringIO('{"hook_event_name":"SessionStart"}')
 # The real spawn path never raises, but an O_EXCL lock can make engine_spawn return
@@ -421,6 +433,10 @@ mkdir -p "$ENG_HOME"
 ENG_ARGS="$ENG_HOME/spawn-argv.txt"
 ENG_POPOUT="$ENG_HOME/spawn-blocked.txt"
 export ENG_ARGS ENG_POPOUT
+# E3 marker cases call run_enginefork directly from the parent shell; run_engineless_env's
+# export lives inside a $(...) subshell and does not reach them. Export the isolation root
+# here so _engine_paths() (via _granite_home/RSRS_DATA_DIR) reads the isolated markers.
+export RSRS_DATA_DIR="$ENG_HOME"
 eng_reset() {
   rm -f "$ENG_ARGS" "$ENG_POPOUT" "$ENG_HOME"/engine-setup.done "$ENG_HOME"/engine-setup.failed \
         "$ENG_HOME"/engine-setup.lock "$ENG_HOME"/engine-setup.log
@@ -439,7 +455,7 @@ import os, sys, importlib.util, subprocess
 spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.find_rsrs = lambda cfg: None
-class PopenBlocked(BaseException):
+class PopenBlocked(Exception):
     """Sentinel: abort right after the stubbed fork so the spawn evidence survives."""
 real_popen = subprocess.Popen
 def spy(*a, **k):
@@ -451,15 +467,14 @@ def spy(*a, **k):
     return real_popen(*a, **k)
 subprocess.Popen = spy
 m.subprocess.Popen = spy
-# Isolation contract: the caller seeds the marker FIRST (E3), then this helper clears any
-# leftover lock. Order matters -- the marker check runs before the lock check, so a stale
-# lock cannot mask a seeded .done/.failed, while a stale lock alone still falls through to
-# the retry path (the stale-lock case relies on this).
-p = m._engine_paths()
-try:
-    os.remove(p["lock"])
-except OSError:
-    pass
+# A stale-lock case seeds a DEAD-pid lock that engine_spawn's O_EXCL cannot overwrite; clear
+# it first so the retry path can be observed. The live-lock case sets ENG_KEEP_LOCK=1 so its
+# seeded LIVE lock is preserved and read as "running".
+if os.environ.get("ENG_KEEP_LOCK") != "1":
+    try:
+        os.remove(m._engine_paths()["lock"])
+    except OSError:
+        pass
 state = ""
 try:
     state = m.engine_spawn(m.load_config())
@@ -521,7 +536,9 @@ check "engine: a .failed marker never respawns the worker" "$(eng_spawned)" "has
 check "engine: a .failed marker reports the failed verdict" "$FORK_OUT" "has:STATE=failed"
 eng_reset
 printf '%s' "$$" > "$ENG_HOME/engine-setup.lock"
+export ENG_KEEP_LOCK=1
 FORK_OUT="$(run_enginefork)"
+unset ENG_KEEP_LOCK
 check "engine: a live lock never respawns the worker" "$(eng_spawned)" "has:NO"
 check "engine: a live lock reports the running verdict" "$FORK_OUT" "has:STATE=running"
 eng_reset
@@ -593,7 +610,7 @@ if scen == "new2x":
 else:
     m.find_rsrs = lambda cfg: old_engine
 # --- Popen stub: intercept the SessionStart fork, never let npm run ---
-class PopenBlocked(BaseException):
+class PopenBlocked(Exception):
     pass
 real_popen = subprocess.Popen
 def spy(*a, **k):
@@ -1204,7 +1221,7 @@ import io, os, sys, importlib.util, subprocess
 spec = importlib.util.spec_from_file_location("respire", os.path.join(os.environ["ROOT_HOOK"], "hooks", "respire.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 real_state, real_popen = m.granite_spawn_state, subprocess.Popen
-class PopenBlocked(BaseException):
+class PopenBlocked(Exception):
     """Abort right after the stubbed fork: the granite path stays fail-open (SystemExit
     would also abort main and skip the rules record, masking the verdict)."""
 def spy_state(cfg):
