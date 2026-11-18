@@ -1254,6 +1254,8 @@ class PopenBlocked(Exception):
     """Abort right after the stubbed fork: the granite path stays fail-open (SystemExit
     would also abort main and skip the rules record, masking the verdict)."""
 def spy_state(cfg):
+    if os.environ.get("GS_SELF"):
+        open(os.environ["GS_LOCK"], "w").write(str(os.getpid()))
     v = real_state(cfg)
     with open(os.environ["STUB_STATE"], "w", encoding="utf-8") as f:
         f.write(v)
@@ -1336,16 +1338,17 @@ PY
 
   # ---- G5: a live lock (worker pid alive) -> already running, no second spawn ----
   gs_reset
-  # Use a real OS process as the lock owner. $$ is an MSYS bash pid that native Windows Python
-  # cannot see via os.kill(pid, 0); a spawned sleep is a real process on every platform.
-  sleep 30 & LOCKPID=$!
-  if gs_seed_lock "$LOCKPID"; then
+  # Seed a placeholder lock, then have the Python under test rewrite it with its OWN pid.
+  # A bash $$ / spawned-process pid is an MSYS pid that native Windows Python cannot see via
+  # os.kill(pid, 0); the running Python's own pid is live and visible on every platform.
+  if gs_seed_lock "1"; then
+    export GS_SELF=1
+    export GS_LOCK="$GS_HOME/granite-setup.lock"
     gs_run "missing"
-    kill "$LOCKPID" 2>/dev/null || true
+    unset GS_SELF GS_LOCK
     check "granite: a live lock is reported as running" "$(cat "$GS_STATE" 2>/dev/null || echo missing)" "has:running"
     check "granite: a live lock never respawns the worker" "$(gs_spawned)" "has:NO"
   else
-    kill "$LOCKPID" 2>/dev/null || true
     echo "FAIL  granite: could not seed the live-lock marker (cannot verify the running case)"
     GFALL=1
   fi
