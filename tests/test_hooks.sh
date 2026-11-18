@@ -679,8 +679,12 @@ os.makedirs(os.path.dirname(old_engine), exist_ok=True)
 open(old_engine, "w").write("#!/bin/sh\necho respire/rsrs 1.0.19\n")
 os.chmod(old_engine, 0o755)
 m.find_rsrs = lambda cfg: old_engine          # stale 1.x found -> must NOT early-exit
+# F3's contract is "a stale CLI must NOT early-exit; reinstall then verify". Express the
+# stale verdict directly instead of relying on how many --version probes cli_needs_repair
+# makes (that count varies with PATH/which across hosts). cli_needs_repair itself is covered
+# by F5. Every --version here is a post-install verify and returns the healthy 2.x.
+m.cli_needs_repair = lambda cfg, eng: True
 calls = []
-calls_preflight = [False]                      # first --version is the pre-flight repair probe
 def fake_run(cmd, **kw):
     calls.append(" ".join(map(str, cmd)))
     class R:
@@ -693,11 +697,6 @@ def fake_run(cmd, **kw):
         os.makedirs(os.path.dirname(target), exist_ok=True)
         open(target, "w").write("#!/bin/sh\necho rsrs 2.0.0-dev.18\n")
         os.chmod(target, 0o755)
-    elif len(cmd) > 1 and "--version" in cmd and not calls_preflight[0]:
-        # Only the FIRST version probe (cli_needs_repair on the stale found engine)
-        # reports 1.x; the post-install verify of the newly installed target is 2.x.
-        calls_preflight[0] = True
-        r.stdout, r.stderr = "respire/rsrs 1.0.19", ""
     else:
         r.stdout, r.stderr = "rsrs 2.0.0-dev.18", ""
     return r
