@@ -17,7 +17,7 @@ The plugin ships no CLI, no runtime and no custom install script; when they are 
 
 ## Works without a model
 
-- Registration, login, sync and recall do not depend on an on-device model. Without one, recall falls back to literal text matching and remains fully usable.
+- Registration, login, sync and recall do not depend on an on-device model. Without one, recall falls back to literal text matching and remains fully usable. A fresh install works in lexical mode right away; semantic recall is opt-in -- install the model only when you want it.
 - The BGE-M3 model (~1.1GB) is an optional install: with it, recall matches semantically and works better. Run `rsrs model install && rsrs model activate m3`; 2.x also offers `rsrs model switch m3` (prepare + probe + rebuild in one atomic activation), `rsrs model catalog`, `rsrs model probe` and `rsrs model engine` for managing it. Without the model the plugin hints once and normal use is unaffected.
 
 ## Install
